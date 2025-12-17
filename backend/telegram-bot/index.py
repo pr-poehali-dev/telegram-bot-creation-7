@@ -184,7 +184,7 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
             'marketplace': 'маркетплейс',
             'warehouse': 'склад назначения',
             'loading_address': 'адрес погрузки',
-            'loading_date': 'дату погрузки',
+            'loading_date': 'дату погрузки (ДД.ММ.ГГГГ)',
             'loading_time': 'время погрузки',
             'pallet_quantity': 'количество паллет',
             'box_quantity': 'количество коробок',
@@ -195,7 +195,8 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
             'license_plate': 'гос. номер',
             'pallet_capacity': 'вместимость паллет',
             'box_capacity': 'вместимость коробок',
-            'driver_name': 'ФИО водителя'
+            'driver_name': 'ФИО водителя',
+            'arrival_date': 'дату прибытия на склад (ДД.ММ.ГГГГ)'
         }
         
         send_message(
@@ -317,6 +318,13 @@ def process_message(chat_id: int, text: str):
         
         if field in ['pallet_quantity', 'box_quantity', 'pallet_capacity', 'box_capacity']:
             data[field] = int(text) if text.isdigit() else 0
+        elif field in ['loading_date', 'arrival_date']:
+            try:
+                date_obj = datetime.strptime(text, '%d.%m.%Y')
+                data[field] = date_obj.strftime('%Y-%m-%d')
+            except ValueError:
+                send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
+                return
         else:
             data[field] = text
         
@@ -484,28 +492,27 @@ def process_message(chat_id: int, text: str):
     
     elif step == 'carrier_phone':
         data['phone'] = text
-        state['step'] = 'carrier_label_size'
-        send_message(
-            chat_id,
-            "🏷️ <b>Выберите термонаклейку с инфо для водителя</b>",
-            {
-                'keyboard': [
-                    [{'text': '120x75 мм'}],
-                    [{'text': '58x40 мм'}]
-                ],
-                'resize_keyboard': True,
-                'one_time_keyboard': True
-            }
-        )
+        state['step'] = 'carrier_loading_date'
+        send_message(chat_id, "📅 <b>Укажите желаемую дату погрузки</b>\n\nФормат: ДД.ММ.ГГГГ\nНапример: 25.12.2025", {'remove_keyboard': True})
     
-    elif step == 'carrier_label_size':
-        if '120' in text:
-            data['label_size'] = '120x75'
-        else:
-            data['label_size'] = '58x40'
-        
-        send_message(chat_id, "⏳ Генерирую термонаклейку...")
-        generate_and_send_label(chat_id, data)
+    elif step == 'carrier_loading_date':
+        try:
+            loading_date = datetime.strptime(text, '%d.%m.%Y')
+            data['loading_date'] = loading_date.strftime('%Y-%m-%d')
+            state['step'] = 'carrier_arrival_date'
+            send_message(chat_id, "📅 <b>Укажите дату прибытия на склад</b>\n\nФормат: ДД.ММ.ГГГГ\nНапример: 26.12.2025")
+        except ValueError:
+            send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
+    
+    elif step == 'carrier_arrival_date':
+        try:
+            arrival_date = datetime.strptime(text, '%d.%m.%Y')
+            data['arrival_date'] = arrival_date.strftime('%Y-%m-%d')
+            
+            user_states[chat_id]['step'] = 'show_preview'
+            show_preview(chat_id, data)
+        except ValueError:
+            send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
 
 
 def generate_and_send_label(chat_id: int, data: Dict[str, Any]):
@@ -601,7 +608,8 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
             f"📦 Вместимость коробок: {data.get('box_capacity', 0)}\n"
             f"👤 Водитель: {data.get('driver_name', '-')}\n"
             f"📱 Телефон: {data.get('phone', '-')}\n"
-            f"🏷️ Термонаклейка: {data.get('label_size', '-')}"
+            f"📅 Дата погрузки: {data.get('loading_date', '-')}\n"
+            f"📅 Дата прибытия: {data.get('arrival_date', '-')}"
         )
         
         keyboard = {
@@ -623,7 +631,11 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
                     {'text': '✏️ Водитель', 'callback_data': 'edit_driver_name'}
                 ],
                 [
-                    {'text': '✏️ Телефон', 'callback_data': 'edit_phone'}
+                    {'text': '✏️ Телефон', 'callback_data': 'edit_phone'},
+                    {'text': '✏️ Дата погрузки', 'callback_data': 'edit_loading_date'}
+                ],
+                [
+                    {'text': '✏️ Дата прибытия', 'callback_data': 'edit_arrival_date'}
                 ],
                 [
                     {'text': '✅ СОЗДАТЬ ЗАЯВКУ', 'callback_data': 'confirm_create'}
@@ -690,8 +702,8 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
             cur.execute(
                 """
                 INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
-                (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, label_size, marketplace)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, marketplace, loading_date, arrival_date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -703,8 +715,9 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                     data.get('box_capacity', 0),
                     data.get('driver_name'),
                     data.get('phone'),
-                    data.get('label_size'),
-                    data.get('marketplace')
+                    data.get('marketplace'),
+                    data.get('loading_date'),
+                    data.get('arrival_date')
                 )
             )
             
@@ -716,8 +729,6 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                 f"✅ <b>Заявка #{order_id} создана!</b>\n\nОтправители получили уведомление о вашем предложении.",
                 {'remove_keyboard': True}
             )
-            
-            send_label_to_user(chat_id, order_id, 'carrier', data.get('label_size', '120x75'))
             
             notify_about_new_order(order_id, 'carrier', data)
             send_notifications_to_subscribers(order_id, 'carrier', data)
@@ -944,7 +955,7 @@ def show_my_orders(chat_id: int):
             sender_orders = cur.fetchall()
             
             cur.execute(
-                "SELECT id, marketplace, warehouse FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE phone LIKE %s ORDER BY id DESC LIMIT 10",
+                "SELECT id, marketplace, warehouse, loading_date, arrival_date FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE phone LIKE %s ORDER BY id DESC LIMIT 10",
                 (f'%{chat_id}%',)
             )
             carrier_orders = cur.fetchall()
@@ -973,8 +984,10 @@ def show_my_orders(chat_id: int):
             if carrier_orders:
                 message_parts.append("\n🚚 <b>Ваши заявки перевозчика:</b>\n")
                 for order in carrier_orders:
+                    loading = order.get('loading_date', '-')
+                    arrival = order.get('arrival_date', '-')
                     message_parts.append(
-                        f"#{order['id']} - {order.get('marketplace', '-')} → {order.get('warehouse', '-')}\n"
+                        f"#{order['id']} - {order.get('marketplace', '-')} → {order.get('warehouse', '-')} ({loading} - {arrival})\n"
                     )
                     keyboard_buttons.append([{
                         'text': f"🗑️ Удалить #{order['id']}",
@@ -1039,7 +1052,9 @@ def notify_about_new_order(order_id: int, order_type: str, data: Dict[str, Any])
             f"🔢 Номер: {data.get('license_plate')}\n"
             f"📦 Вместимость: {data.get('pallet_capacity', 0)} паллет, {data.get('box_capacity', 0)} коробок\n"
             f"👤 Водитель: {data.get('driver_name')}\n"
-            f"📱 Телефон: {data.get('phone')}"
+            f"📱 Телефон: {data.get('phone')}\n"
+            f"📅 Погрузка: {data.get('loading_date', '-')}\n"
+            f"📅 Прибытие: {data.get('arrival_date', '-')}"
         )
     
     send_message(int(ADMIN_CHAT_ID), message)
