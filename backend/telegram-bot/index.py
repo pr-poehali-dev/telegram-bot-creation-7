@@ -27,7 +27,9 @@ MARKETPLACES = [
 ]
 
 user_states: Dict[int, Dict[str, Any]] = {}
+admin_sessions: Dict[int, int] = {}
 SESSION_TIMEOUT = 6 * 60 * 60
+ADMIN_SESSION_TIMEOUT = 24 * 60 * 60
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     method: str = event.get('httpMethod', 'POST')
@@ -219,6 +221,18 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
             send_message(chat_id, "❌ У вас нет прав администратора")
             return
         
+        if callback_data == 'admin_exit':
+            if chat_id in admin_sessions:
+                del admin_sessions[chat_id]
+            send_message(
+                chat_id,
+                "👋 Вы вышли из админ-панели. Введите /start для возврата к основному меню.",
+                {'remove_keyboard': True}
+            )
+            return
+        
+        admin_sessions[chat_id] = int(time.time())
+        
         if callback_data == 'admin_stats':
             show_admin_stats(chat_id)
         elif callback_data == 'admin_weekly':
@@ -226,12 +240,6 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         elif callback_data == 'admin_delete':
             state['admin_action'] = 'delete'
             send_message(chat_id, "📝 Введите ID заявки для удаления (например: 123)")
-        elif callback_data == 'admin_block':
-            state['admin_action'] = 'block'
-            send_message(chat_id, "📝 Введите Chat ID пользователя для блокировки")
-        elif callback_data == 'admin_unblock':
-            state['admin_action'] = 'unblock'
-            send_message(chat_id, "📝 Введите Chat ID пользователя для разблокировки")
         elif callback_data == 'admin_cleanup':
             cleanup_old_orders(chat_id)
     
@@ -263,6 +271,8 @@ def process_message(chat_id: int, text: str):
             send_message(chat_id, "❌ У вас нет прав администратора")
             return
         
+        admin_sessions[chat_id] = int(time.time())
+        
         send_message(
             chat_id,
             "🔧 <b>Админ-панель</b>\n\n" +
@@ -272,9 +282,8 @@ def process_message(chat_id: int, text: str):
                     [{'text': '📊 Статистика', 'callback_data': 'admin_stats'}],
                     [{'text': '📈 Еженедельный отчёт', 'callback_data': 'admin_weekly'}],
                     [{'text': '🗑️ Удалить заявку', 'callback_data': 'admin_delete'}],
-                    [{'text': '🚫 Заблокировать пользователя', 'callback_data': 'admin_block'}],
-                    [{'text': '✅ Разблокировать пользователя', 'callback_data': 'admin_unblock'}],
-                    [{'text': '🧹 Очистить старые заявки', 'callback_data': 'admin_cleanup'}]
+                    [{'text': '🧹 Очистить старые заявки', 'callback_data': 'admin_cleanup'}],
+                    [{'text': '🏠 Выйти из админ-панели', 'callback_data': 'admin_exit'}]
                 ]
             }
         )
@@ -432,7 +441,12 @@ def process_message(chat_id: int, text: str):
         send_message(chat_id, "📱 <b>Укажите номер телефона</b>\n\nФормат: +79991234567")
     
     elif step == 'sender_phone':
-        data['phone'] = text
+        phone = text.strip()
+        if phone.startswith('8'):
+            phone = '+7' + phone[1:]
+        elif not phone.startswith('+'):
+            phone = '+7' + phone
+        data['phone'] = phone
         state['step'] = 'sender_label_size'
         send_message(
             chat_id,
@@ -453,8 +467,9 @@ def process_message(chat_id: int, text: str):
         else:
             data['label_size'] = '58x40'
         
-        send_message(chat_id, "⏳ Генерирую термонаклейку...")
-        generate_and_send_label(chat_id, data)
+        send_message(chat_id, "📋 Термонаклейка будет отправлена после создания заявки")
+        state['step'] = 'show_preview'
+        show_preview(chat_id, data)
     
     elif step == 'carrier_warehouse':
         if 'любой' in text.lower():
@@ -495,7 +510,12 @@ def process_message(chat_id: int, text: str):
         send_message(chat_id, "📱 <b>Укажите номер телефона</b>\n\nФормат: +79991234567")
     
     elif step == 'carrier_phone':
-        data['phone'] = text
+        phone = text.strip()
+        if phone.startswith('8'):
+            phone = '+7' + phone[1:]
+        elif not phone.startswith('+'):
+            phone = '+7' + phone
+        data['phone'] = phone
         state['step'] = 'carrier_loading_date'
         send_message(chat_id, "📅 <b>Укажите желаемую дату погрузки</b>\n\nФормат: ДД.ММ.ГГГГ\nНапример: 25.12.2025", {'remove_keyboard': True})
     
