@@ -7,41 +7,7 @@ import UserTypeSelector from "@/components/UserTypeSelector";
 import SenderForm from "@/components/SenderForm";
 import CarrierForm from "@/components/CarrierForm";
 import OrdersList from "@/components/OrdersList";
-
-type UserType = "sender" | "carrier" | null;
-
-interface SenderData {
-  pickupAddress: string;
-  pickupComments: string;
-  warehouse: string;
-  deliveryDate: string;
-  cargoType: "pallet" | "box";
-  cargoQuantity: string;
-  senderName: string;
-  phone: string;
-  photo: string;
-  labelSize: "120x75" | "58x40";
-}
-
-interface CarrierData {
-  carBrand: string;
-  carModel: string;
-  licensePlate: string;
-  capacityType: "pallet" | "box";
-  capacityQuantity: string;
-  warehouse: string;
-  driverName: string;
-  phone: string;
-  licenseNumber: string;
-  photo: string;
-}
-
-interface Order {
-  id: string;
-  type: "sender" | "carrier";
-  data: SenderData | CarrierData;
-  createdAt: Date;
-}
+import type { UserType, SenderData, CarrierData, Order } from "@/types";
 
 const API_URL = "https://functions.poehali.dev/05090f07-7a7b-45e9-a7e8-33227bbce72e";
 
@@ -231,7 +197,7 @@ const Index = () => {
           <TabsList className="grid w-full grid-cols-2 mb-6">
             <TabsTrigger value="form">Новая заявка</TabsTrigger>
             <TabsTrigger value="orders">
-              Все заявки ({orders.length})
+              {userType === "sender" ? "Перевозчики" : "Отправители"} ({orders.filter(order => userType === "sender" ? order.type === "carrier" : order.type === "sender").length})
             </TabsTrigger>
           </TabsList>
 
@@ -254,7 +220,7 @@ const Index = () => {
           </TabsContent>
 
           <TabsContent value="orders" className="animate-fade-in">
-            <OrdersList orders={orders} />
+            <OrdersList orders={orders.filter(order => userType === "sender" ? order.type === "carrier" : order.type === "sender")} />
           </TabsContent>
         </Tabs>
       </div>

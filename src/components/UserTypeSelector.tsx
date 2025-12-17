@@ -1,11 +1,10 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import Icon from "@/components/ui/icon";
-
-type UserType = "sender" | "carrier";
+import type { UserType } from "@/types";
 
 interface UserTypeSelectorProps {
-  onSelectType: (type: UserType) => void;
+  onSelectType: (type: Exclude<UserType, null>) => void;
 }
 
 const UserTypeSelector = ({ onSelectType }: UserTypeSelectorProps) => {

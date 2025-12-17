@@ -1,0 +1,10 @@
+{
+  "tests": [
+    {
+      "name": "Setup webhook",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200
+    }
+  ]
+}

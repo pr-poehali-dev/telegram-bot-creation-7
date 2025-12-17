@@ -1,38 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import Icon from "@/components/ui/icon";
-
-interface SenderData {
-  pickupAddress: string;
-  pickupComments: string;
-  warehouse: string;
-  deliveryDate: string;
-  cargoType: "pallet" | "box";
-  cargoQuantity: string;
-  senderName: string;
-  phone: string;
-  photo: string;
-  labelSize: "120x75" | "58x40";
-}
-
-interface CarrierData {
-  carBrand: string;
-  carModel: string;
-  licensePlate: string;
-  capacityType: "pallet" | "box";
-  capacityQuantity: string;
-  warehouse: string;
-  driverName: string;
-  phone: string;
-  licenseNumber: string;
-  photo: string;
-}
-
-interface Order {
-  id: string;
-  type: "sender" | "carrier";
-  data: SenderData | CarrierData;
-  createdAt: Date;
-}
+import type { Order, SenderData, CarrierData } from "@/types";
 
 interface OrdersListProps {
   orders: Order[];

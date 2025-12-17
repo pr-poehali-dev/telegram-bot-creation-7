@@ -4,19 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import Icon from "@/components/ui/icon";
-
-interface CarrierData {
-  carBrand: string;
-  carModel: string;
-  licensePlate: string;
-  capacityType: "pallet" | "box";
-  capacityQuantity: string;
-  warehouse: string;
-  driverName: string;
-  phone: string;
-  licenseNumber: string;
-  photo: string;
-}
+import type { CarrierData } from "@/types";
 
 interface CarrierFormProps {
   carrierData: CarrierData;

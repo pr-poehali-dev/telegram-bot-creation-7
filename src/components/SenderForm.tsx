@@ -5,19 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import Icon from "@/components/ui/icon";
-
-interface SenderData {
-  pickupAddress: string;
-  pickupComments: string;
-  warehouse: string;
-  deliveryDate: string;
-  cargoType: "pallet" | "box";
-  cargoQuantity: string;
-  senderName: string;
-  phone: string;
-  photo: string;
-  labelSize: "120x75" | "58x40";
-}
+import type { SenderData } from "@/types";
 
 interface SenderFormProps {
   senderData: SenderData;

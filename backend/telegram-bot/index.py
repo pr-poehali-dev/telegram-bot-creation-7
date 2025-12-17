@@ -133,7 +133,17 @@ def process_message(chat_id: int, text: str):
         elif '🚚' in text or 'перевозчик' in text.lower():
             data['type'] = 'carrier'
             state['step'] = 'carrier_warehouse'
-            send_message(chat_id, "📍 <b>Укажите склад</b>\n\nНапример: Wildberries Электросталь", {'remove_keyboard': True})
+            send_message(
+                chat_id,
+                "📍 <b>Укажите склад назначения</b>\n\nНапример: Wildberries Электросталь",
+                {
+                    'keyboard': [
+                        [{'text': '📦 Любой склад'}]
+                    ],
+                    'resize_keyboard': True,
+                    'one_time_keyboard': False
+                }
+            )
         else:
             send_message(chat_id, "Пожалуйста, выберите услугу из меню")
     
@@ -197,7 +207,10 @@ def process_message(chat_id: int, text: str):
         save_sender_order(chat_id, data)
     
     elif step == 'carrier_warehouse':
-        data['warehouse'] = text
+        if 'любой' in text.lower():
+            data['warehouse'] = 'Любой склад'
+        else:
+            data['warehouse'] = text
         state['step'] = 'carrier_car_brand'
         send_message(chat_id, "🚗 <b>Укажите марку автомобиля</b>\n\nНапример: Mercedes")
     
