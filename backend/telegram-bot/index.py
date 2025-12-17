@@ -216,6 +216,8 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         
         if callback_data == 'admin_stats':
             show_admin_stats(chat_id)
+        elif callback_data == 'admin_weekly':
+            show_weekly_stats(chat_id)
         elif callback_data == 'admin_delete':
             state['admin_action'] = 'delete'
             send_message(chat_id, "📝 Введите ID заявки для удаления (например: 123)")
@@ -263,6 +265,7 @@ def process_message(chat_id: int, text: str):
             {
                 'inline_keyboard': [
                     [{'text': '📊 Статистика', 'callback_data': 'admin_stats'}],
+                    [{'text': '📈 Еженедельный отчёт', 'callback_data': 'admin_weekly'}],
                     [{'text': '🗑️ Удалить заявку', 'callback_data': 'admin_delete'}],
                     [{'text': '🚫 Заблокировать пользователя', 'callback_data': 'admin_block'}],
                     [{'text': '✅ Разблокировать пользователя', 'callback_data': 'admin_unblock'}],
@@ -506,147 +509,39 @@ def process_message(chat_id: int, text: str):
 
 
 def generate_and_send_label(chat_id: int, data: Dict[str, Any]):
+    send_message(chat_id, "⏳ Генерирую термонаклейку на русском языке...")
+    send_message(chat_id, "📋 Термонаклейка будет отправлена после создания заявки")
+
+
+def send_label_to_user(chat_id: int, order_id: int, order_type: str, label_size: str):
     try:
-        temp_order_data = {
-            'id': 'preview',
-            'marketplace': data.get('marketplace', ''),
-            'warehouse': data.get('warehouse', ''),
-            'phone': data.get('phone', '')
-        }
-        
-        if data['type'] == 'sender':
-            temp_order_data.update({
-                'loading_address': data.get('loading_address', ''),
-                'loading_date': data.get('loading_date', ''),
-                'loading_time': data.get('loading_time', ''),
-                'pallet_quantity': data.get('pallet_quantity', 0),
-                'box_quantity': data.get('box_quantity', 0),
-                'sender_name': data.get('sender_name', '')
-            })
-        else:
-            temp_order_data.update({
-                'car_brand': data.get('car_brand', ''),
-                'car_model': data.get('car_model', ''),
-                'license_plate': data.get('license_plate', ''),
-                'pallet_capacity': data.get('pallet_capacity', 0),
-                'box_capacity': data.get('box_capacity', 0),
-                'driver_name': data.get('driver_name', '')
-            })
-        
         import base64
-        from reportlab.lib.pagesizes import mm
-        from reportlab.pdfgen import canvas
-        from reportlab.lib.units import mm as MM
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        from reportlab.graphics.barcode.qr import QrCodeWidget
-        from reportlab.graphics.shapes import Drawing
-        from reportlab.graphics import renderPDF
-        import io
         
-        buffer = io.BytesIO()
+        response = requests.post(
+            PDF_FUNCTION_URL,
+            json={
+                'order_id': order_id,
+                'order_type': order_type,
+                'label_size': label_size
+            },
+            timeout=30
+        )
         
-        label_size = data.get('label_size', '120x75')
-        if label_size == '120x75':
-            width, height = 120*MM, 75*MM
-            font_size_title = 12
-            font_size_normal = 9
-            font_size_small = 7
-            qr_size = 15*MM
+        if response.status_code == 200:
+            result = response.json()
+            pdf_base64 = result.get('pdf')
+            filename = result.get('filename', f'label_{order_id}.pdf')
+            
+            if pdf_base64:
+                pdf_bytes = base64.b64decode(pdf_base64)
+                send_document(chat_id, pdf_bytes, filename, f"📄 Термонаклейка для заявки #{order_id}")
+            else:
+                send_message(chat_id, "❌ Ошибка: не удалось получить PDF")
         else:
-            width, height = 58*MM, 40*MM
-            font_size_title = 8
-            font_size_normal = 6
-            font_size_small = 5
-            qr_size = 10*MM
-        
-        c = canvas.Canvas(buffer, pagesize=(width, height))
-        
-        bot_username = os.environ.get('TELEGRAM_BOT_USERNAME', 'your_bot')
-        qr_url = f"https://t.me/{bot_username}"
-        
-        qr_code = QrCodeWidget(qr_url)
-        qr_drawing = Drawing(qr_size, qr_size, transform=[qr_size/qr_code.width, 0, 0, qr_size/qr_code.width, 0, 0])
-        qr_drawing.add(qr_code)
-        
-        qr_x = width - qr_size - 5*MM
-        qr_y = height - qr_size - 5*MM
-        renderPDF.draw(qr_drawing, c, qr_x, qr_y)
-        
-        y_position = height - 10*MM
-        x_margin = 5*MM
-        
-        c.setFont("Helvetica-Bold", font_size_title)
-        c.drawString(x_margin, y_position, "CARGO EXPRESS")
-        
-        y_position -= 6*MM
-        c.setFont("Helvetica", font_size_small)
-        title = "Otpravitel" if data['type'] == 'sender' else "Perevozchik"
-        c.drawString(x_margin, y_position, title)
-        
-        y_position -= 6*MM
-        c.setFont("Helvetica", font_size_normal)
-        
-        marketplace = temp_order_data.get('marketplace', '')
-        c.drawString(x_margin, y_position, f"MP: {marketplace}")
-        y_position -= 5*MM
-        
-        warehouse = temp_order_data.get('warehouse', '')
-        c.drawString(x_margin, y_position, f"Sklad: {warehouse}")
-        y_position -= 5*MM
-        
-        if data['type'] == 'sender':
-            if temp_order_data.get('loading_address'):
-                addr = temp_order_data['loading_address'][:25]
-                c.drawString(x_margin, y_position, f"Adres: {addr}")
-                y_position -= 4*MM
-            
-            date_str = temp_order_data.get('loading_date', '')
-            time_str = temp_order_data.get('loading_time', '')
-            c.drawString(x_margin, y_position, f"Data: {date_str} {time_str}")
-            y_position -= 4*MM
-            
-            pallet = temp_order_data.get('pallet_quantity', 0)
-            boxes = temp_order_data.get('box_quantity', 0)
-            c.drawString(x_margin, y_position, f"Gruz: {pallet} pal, {boxes} kor")
-            y_position -= 4*MM
-            
-            sender = temp_order_data.get('sender_name', '')[:20]
-            c.drawString(x_margin, y_position, f"FIO: {sender}")
-        else:
-            car_brand = temp_order_data.get('car_brand', '')
-            car_model = temp_order_data.get('car_model', '')
-            c.drawString(x_margin, y_position, f"Avto: {car_brand} {car_model}")
-            y_position -= 4*MM
-            
-            plate = temp_order_data.get('license_plate', '')
-            c.drawString(x_margin, y_position, f"Nomer: {plate}")
-            y_position -= 4*MM
-            
-            pallet = temp_order_data.get('pallet_capacity', 0)
-            boxes = temp_order_data.get('box_capacity', 0)
-            c.drawString(x_margin, y_position, f"Vmest: {pallet} pal, {boxes} kor")
-            y_position -= 4*MM
-            
-            driver = temp_order_data.get('driver_name', '')[:20]
-            c.drawString(x_margin, y_position, f"Voditel: {driver}")
-        
-        y_position -= 4*MM
-        phone = temp_order_data.get('phone', '')
-        c.drawString(x_margin, y_position, f"Tel: {phone}")
-        
-        c.save()
-        pdf_bytes = buffer.getvalue()
-        buffer.close()
-        
-        filename = f"label_{data['type']}_{data.get('label_size', '120x75')}.pdf"
-        send_document(chat_id, pdf_bytes, filename, "✅ Термонаклейка готова!")
-        
-        user_states[chat_id]['step'] = 'show_preview'
-        show_preview(chat_id, data)
+            send_message(chat_id, f"❌ Ошибка генерации термонаклейки (код {response.status_code})")
     
     except Exception as e:
-        send_message(chat_id, f"❌ Ошибка генерации термонаклейки: {str(e)}")
+        send_message(chat_id, f"❌ Ошибка отправки термонаклейки: {str(e)}")
 
 
 def show_preview(chat_id: int, data: Dict[str, Any]):
@@ -777,6 +672,8 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                 {'remove_keyboard': True}
             )
             
+            send_label_to_user(chat_id, order_id, 'sender', data.get('label_size', '120x75'))
+            
             notify_about_new_order(order_id, 'sender', data)
             send_notifications_to_subscribers(order_id, 'sender', data)
             ask_notification_settings(chat_id, 'sender', data)
@@ -819,6 +716,8 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                 f"✅ <b>Заявка #{order_id} создана!</b>\n\nОтправители получили уведомление о вашем предложении.",
                 {'remove_keyboard': True}
             )
+            
+            send_label_to_user(chat_id, order_id, 'carrier', data.get('label_size', '120x75'))
             
             notify_about_new_order(order_id, 'carrier', data)
             send_notifications_to_subscribers(order_id, 'carrier', data)
@@ -962,6 +861,78 @@ def cleanup_old_orders(chat_id: int):
         conn.close()
 
 
+def show_weekly_stats(chat_id: int):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            week_ago = datetime.now() - timedelta(days=7)
+            week_ago_str = week_ago.strftime('%Y-%m-%d')
+            
+            cur.execute("""
+                SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.sender_orders 
+                WHERE created_at >= %s
+            """, (week_ago_str,))
+            new_sender = cur.fetchone()[0]
+            
+            cur.execute("""
+                SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.carrier_orders 
+                WHERE created_at >= %s
+            """, (week_ago_str,))
+            new_carrier = cur.fetchone()[0]
+            
+            cur.execute("SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.sender_orders")
+            total_sender = cur.fetchone()[0]
+            
+            cur.execute("SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.carrier_orders")
+            total_carrier = cur.fetchone()[0]
+            
+            cur.execute("""
+                SELECT marketplace, COUNT(*) as cnt 
+                FROM t_p52349012_telegram_bot_creatio.sender_orders 
+                WHERE created_at >= %s AND marketplace IS NOT NULL
+                GROUP BY marketplace 
+                ORDER BY cnt DESC 
+                LIMIT 3
+            """, (week_ago_str,))
+            top_marketplaces = cur.fetchall()
+            
+            cur.execute("""
+                SELECT warehouse, COUNT(*) as cnt 
+                FROM t_p52349012_telegram_bot_creatio.sender_orders 
+                WHERE created_at >= %s AND warehouse IS NOT NULL
+                GROUP BY warehouse 
+                ORDER BY cnt DESC 
+                LIMIT 3
+            """, (week_ago_str,))
+            top_warehouses = cur.fetchall()
+            
+            stats_text = (
+                f"📈 <b>ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ</b>\n"
+                f"📅 {week_ago.strftime('%d.%m.%Y')} - {datetime.now().strftime('%d.%m.%Y')}\n\n"
+                f"📊 <b>Новые заявки за неделю:</b>\n"
+                f"📦 Отправителей: {new_sender}\n"
+                f"🚚 Перевозчиков: {new_carrier}\n"
+                f"📊 Всего: {new_sender + new_carrier}\n\n"
+                f"📊 <b>Общая статистика:</b>\n"
+                f"📦 Всего отправителей: {total_sender}\n"
+                f"🚚 Всего перевозчиков: {total_carrier}\n"
+            )
+            
+            if top_marketplaces:
+                stats_text += "\n🏪 <b>Топ маркетплейсов недели:</b>\n"
+                for mp, cnt in top_marketplaces:
+                    stats_text += f"• {mp}: {cnt} заявок\n"
+            
+            if top_warehouses:
+                stats_text += "\n📍 <b>Топ складов недели:</b>\n"
+                for wh, cnt in top_warehouses:
+                    stats_text += f"• {wh}: {cnt} заявок\n"
+            
+            send_message(chat_id, stats_text)
+    finally:
+        conn.close()
+
+
 def show_my_orders(chat_id: int):
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
@@ -979,7 +950,10 @@ def show_my_orders(chat_id: int):
             carrier_orders = cur.fetchall()
             
             if not sender_orders and not carrier_orders:
-                send_message(chat_id, "У вас пока нет заявок")
+                send_message(
+                    chat_id,
+                    "📭 <b>У вас пока нет заявок</b>\n\nСоздайте заявку через главное меню, выбрав роль отправителя или перевозчика."
+                )
                 return
             
             message_parts = []
