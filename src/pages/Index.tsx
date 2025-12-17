@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,9 +44,54 @@ interface Order {
   createdAt: Date;
 }
 
+const API_URL = "https://functions.poehali.dev/05090f07-7a7b-45e9-a7e8-33227bbce72e";
+
 const Index = () => {
   const [userType, setUserType] = useState<UserType>(null);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    loadOrders();
+  }, []);
+
+  const loadOrders = async () => {
+    try {
+      const response = await fetch(API_URL);
+      const data = await response.json();
+      const formattedOrders = data.orders.map((order: any) => ({
+        id: order.id.toString(),
+        type: order.type,
+        data: order.type === "sender" ? {
+          pickupAddress: order.pickupAddress || "",
+          pickupComments: order.pickupComments || "",
+          warehouse: order.warehouse || "",
+          deliveryDate: order.deliveryDate || "",
+          cargoType: order.cargoType,
+          cargoQuantity: order.cargoQuantity || "",
+          senderName: order.senderName || "",
+          phone: order.phone || "",
+          photo: order.photo || "",
+          labelSize: order.labelSize || "120x75",
+        } : {
+          carBrand: order.carBrand || "",
+          carModel: order.carModel || "",
+          licensePlate: order.licensePlate || "",
+          capacityType: order.capacityType,
+          capacityQuantity: order.capacityQuantity || "",
+          warehouse: order.warehouse || "",
+          driverName: order.driverName || "",
+          phone: order.phone || "",
+          licenseNumber: order.licenseNumber || "",
+          photo: order.photo || "",
+        },
+        createdAt: new Date(order.createdAt),
+      }));
+      setOrders(formattedOrders);
+    } catch (error) {
+      console.error("Ошибка загрузки заявок:", error);
+    }
+  };
   const [senderData, setSenderData] = useState<SenderData>({
     pickupAddress: "",
     pickupComments: "",
@@ -72,64 +117,84 @@ const Index = () => {
     photo: "",
   });
 
-  const handleSenderSubmit = () => {
+  const handleSenderSubmit = async () => {
     if (!senderData.pickupAddress || !senderData.warehouse || !senderData.senderName || !senderData.phone) {
       toast.error("Заполните обязательные поля");
       return;
     }
     
-    const newOrder: Order = {
-      id: Date.now().toString(),
-      type: "sender",
-      data: { ...senderData },
-      createdAt: new Date(),
-    };
+    setLoading(true);
     
-    setOrders([newOrder, ...orders]);
-    toast.success("Заявка отправителя создана!");
-    
-    setSenderData({
-      pickupAddress: "",
-      pickupComments: "",
-      warehouse: "",
-      deliveryDate: "",
-      cargoType: "pallet",
-      cargoQuantity: "",
-      senderName: "",
-      phone: "",
-      photo: "",
-      labelSize: "120x75",
-    });
+    try {
+      const response = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "sender", ...senderData }),
+      });
+      
+      if (response.ok) {
+        toast.success("Заявка отправителя создана!");
+        await loadOrders();
+        setSenderData({
+          pickupAddress: "",
+          pickupComments: "",
+          warehouse: "",
+          deliveryDate: "",
+          cargoType: "pallet",
+          cargoQuantity: "",
+          senderName: "",
+          phone: "",
+          photo: "",
+          labelSize: "120x75",
+        });
+      } else {
+        toast.error("Ошибка при создании заявки");
+      }
+    } catch (error) {
+      toast.error("Ошибка сети");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleCarrierSubmit = () => {
+  const handleCarrierSubmit = async () => {
     if (!carrierData.carBrand || !carrierData.licensePlate || !carrierData.driverName || !carrierData.phone) {
       toast.error("Заполните обязательные поля");
       return;
     }
     
-    const newOrder: Order = {
-      id: Date.now().toString(),
-      type: "carrier",
-      data: { ...carrierData },
-      createdAt: new Date(),
-    };
+    setLoading(true);
     
-    setOrders([newOrder, ...orders]);
-    toast.success("Заявка перевозчика создана!");
-    
-    setCarrierData({
-      carBrand: "",
-      carModel: "",
-      licensePlate: "",
-      capacityType: "pallet",
-      capacityQuantity: "",
-      warehouse: "",
-      driverName: "",
-      phone: "",
-      licenseNumber: "",
-      photo: "",
-    });
+    try {
+      const response = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "carrier", ...carrierData }),
+      });
+      
+      if (response.ok) {
+        toast.success("Заявка перевозчика создана!");
+        await loadOrders();
+        setCarrierData({
+          carBrand: "",
+          carModel: "",
+          licensePlate: "",
+          capacityType: "pallet",
+          capacityQuantity: "",
+          warehouse: "",
+          driverName: "",
+          phone: "",
+          licenseNumber: "",
+          photo: "",
+        });
+      } else {
+        toast.error("Ошибка при создании заявки");
+      }
+    } catch (error) {
+      toast.error("Ошибка сети");
+    } finally {
+      setLoading(false);
+    }
   };
 
   if (!userType) {
@@ -328,9 +393,9 @@ const Index = () => {
                     </RadioGroup>
                   </div>
 
-                  <Button className="w-full" size="lg" onClick={handleSenderSubmit}>
+                  <Button className="w-full" size="lg" onClick={handleSenderSubmit} disabled={loading}>
                     <Icon name="Send" className="mr-2" size={20} />
-                    Создать заявку
+                    {loading ? "Отправка..." : "Создать заявку"}
                   </Button>
                 </CardContent>
               </Card>
@@ -455,9 +520,9 @@ const Index = () => {
                     />
                   </div>
 
-                  <Button className="w-full" size="lg" onClick={handleCarrierSubmit}>
+                  <Button className="w-full" size="lg" onClick={handleCarrierSubmit} disabled={loading}>
                     <Icon name="Send" className="mr-2" size={20} />
-                    Создать заявку
+                    {loading ? "Отправка..." : "Создать заявку"}
                   </Button>
                 </CardContent>
               </Card>

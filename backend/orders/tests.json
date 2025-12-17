@@ -1,0 +1,44 @@
+{
+  "tests": [
+    {
+      "name": "Get all orders",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200,
+      "expectedBody": {
+        "orders": []
+      }
+    },
+    {
+      "name": "Create sender order",
+      "method": "POST",
+      "path": "/",
+      "body": {
+        "type": "sender",
+        "pickupAddress": "Test Address 123",
+        "warehouse": "Test Warehouse",
+        "cargoType": "pallet",
+        "cargoQuantity": "5",
+        "senderName": "Ivan Ivanov",
+        "phone": "+79991234567"
+      },
+      "expectedStatus": 201
+    },
+    {
+      "name": "Create carrier order",
+      "method": "POST",
+      "path": "/",
+      "body": {
+        "type": "carrier",
+        "carBrand": "Mercedes",
+        "carModel": "Sprinter",
+        "licensePlate": "A000AA777",
+        "capacityType": "pallet",
+        "capacityQuantity": "10",
+        "driverName": "Petr Petrov",
+        "phone": "+79991234568"
+      },
+      "expectedStatus": 201
+    }
+  ]
+}
