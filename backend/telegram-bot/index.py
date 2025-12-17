@@ -12,6 +12,8 @@ from psycopg2.extras import RealDictCursor
 import requests
 from datetime import datetime, timedelta
 import time
+from collections import defaultdict
+import ipaddress
 
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -28,8 +30,64 @@ MARKETPLACES = [
 
 user_states: Dict[int, Dict[str, Any]] = {}
 admin_sessions: Dict[int, int] = {}
+request_counts: Dict[int, list] = defaultdict(list)
 SESSION_TIMEOUT = 6 * 60 * 60
 ADMIN_SESSION_TIMEOUT = 24 * 60 * 60
+MAX_REQUESTS_PER_MINUTE = 20
+MAX_TEXT_LENGTH = 500
+MAX_ORDERS_PER_DAY = 10
+TELEGRAM_IPS = ['149.154.160.0/20', '91.108.4.0/22']
+
+def is_telegram_request(ip: str) -> bool:
+    if not ip:
+        return True
+    try:
+        ip_addr = ipaddress.ip_address(ip)
+        for cidr in TELEGRAM_IPS:
+            if ip_addr in ipaddress.ip_network(cidr):
+                return True
+        return False
+    except:
+        return True
+
+
+def is_rate_limited(chat_id: int) -> bool:
+    now = time.time()
+    requests_list = request_counts[chat_id]
+    
+    requests_list = [req for req in requests_list if now - req < 60]
+    request_counts[chat_id] = requests_list
+    
+    if len(requests_list) >= MAX_REQUESTS_PER_MINUTE:
+        return True
+    
+    requests_list.append(now)
+    return False
+
+
+def validate_text_length(text: str, max_length: int = MAX_TEXT_LENGTH) -> bool:
+    return len(text) <= max_length
+
+
+def get_user_orders_today(chat_id: int) -> int:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders
+                    WHERE created_at::date = CURRENT_DATE
+                    UNION ALL
+                    SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders
+                    WHERE created_at::date = CURRENT_DATE
+                ) AS combined
+            """)
+            return cur.fetchone()[0]
+    except:
+        return 0
+    finally:
+        conn.close()
+
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     method: str = event.get('httpMethod', 'POST')
@@ -64,6 +122,16 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
     
     try:
+        source_ip = event.get('requestContext', {}).get('identity', {}).get('sourceIp', '')
+        
+        if not is_telegram_request(source_ip):
+            return {
+                'statusCode': 403,
+                'headers': {'Content-Type': 'application/json'},
+                'body': json.dumps({'error': 'Forbidden'}),
+                'isBase64Encoded': False
+            }
+        
         body_data = json.loads(event.get('body', '{}'))
         
         if 'callback_query' in body_data:
@@ -71,6 +139,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             chat_id = callback['message']['chat']['id']
             callback_data = callback['data']
             message_id = callback['message']['message_id']
+            
+            if is_rate_limited(chat_id):
+                send_message(chat_id, "⏳ Слишком много запросов. Подождите минуту.")
+                return {
+                    'statusCode': 429,
+                    'headers': {'Content-Type': 'application/json'},
+                    'body': json.dumps({'error': 'Rate limit exceeded'}),
+                    'isBase64Encoded': False
+                }
             
             requests.post(
                 f"{BASE_URL}/answerCallbackQuery",
@@ -97,6 +174,24 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         message = body_data['message']
         chat_id = message['chat']['id']
         text = message.get('text', '')
+        
+        if is_rate_limited(chat_id):
+            send_message(chat_id, "⏳ Слишком много запросов. Подождите минуту.")
+            return {
+                'statusCode': 429,
+                'headers': {'Content-Type': 'application/json'},
+                'body': json.dumps({'error': 'Rate limit exceeded'}),
+                'isBase64Encoded': False
+            }
+        
+        if not validate_text_length(text):
+            send_message(chat_id, f"❌ Текст слишком длинный (максимум {MAX_TEXT_LENGTH} символов)")
+            return {
+                'statusCode': 400,
+                'headers': {'Content-Type': 'application/json'},
+                'body': json.dumps({'error': 'Text too long'}),
+                'isBase64Encoded': False
+            }
         
         process_message(chat_id, text)
         
@@ -674,6 +769,14 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
 
 
 def save_sender_order(chat_id: int, data: Dict[str, Any]):
+    if get_user_orders_today(chat_id) >= MAX_ORDERS_PER_DAY:
+        send_message(
+            chat_id,
+            f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {MAX_ORDERS_PER_DAY} заявок в день.\nПопробуйте завтра.",
+            {'remove_keyboard': True}
+        )
+        return
+    
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     
     try:
@@ -681,8 +784,8 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
             cur.execute(
                 """
                 INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
-                (loading_address, warehouse, loading_date, loading_time, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (loading_address, warehouse, loading_date, loading_time, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace, chat_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -695,7 +798,8 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                     data.get('sender_name'),
                     data.get('phone'),
                     data.get('label_size'),
-                    data.get('marketplace')
+                    data.get('marketplace'),
+                    chat_id
                 )
             )
             
@@ -720,6 +824,14 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
 
 
 def save_carrier_order(chat_id: int, data: Dict[str, Any]):
+    if get_user_orders_today(chat_id) >= MAX_ORDERS_PER_DAY:
+        send_message(
+            chat_id,
+            f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {MAX_ORDERS_PER_DAY} заявок в день.\nПопробуйте завтра.",
+            {'remove_keyboard': True}
+        )
+        return
+    
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     
     try:
@@ -727,8 +839,8 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
             cur.execute(
                 """
                 INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
-                (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, marketplace, loading_date, arrival_date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, marketplace, loading_date, arrival_date, chat_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -742,7 +854,8 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                     data.get('phone'),
                     data.get('marketplace'),
                     data.get('loading_date'),
-                    data.get('arrival_date')
+                    data.get('arrival_date'),
+                    chat_id
                 )
             )
             
@@ -1034,21 +1147,34 @@ def delete_user_order(chat_id: int, order_id: int):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s",
-                (order_id,)
+                "SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s AND chat_id = %s",
+                (order_id, chat_id)
             )
-            if cur.rowcount == 0:
+            
+            if cur.fetchone():
                 cur.execute(
-                    "DELETE FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE id = %s",
-                    (order_id,)
+                    "DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s AND chat_id = %s",
+                    (order_id, chat_id)
                 )
-            
-            conn.commit()
-            
-            if cur.rowcount > 0:
+                conn.commit()
                 send_message(chat_id, f"✅ Заявка #{order_id} удалена")
-            else:
-                send_message(chat_id, f"❌ Заявка #{order_id} не найдена")
+                return
+            
+            cur.execute(
+                "SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE id = %s AND chat_id = %s",
+                (order_id, chat_id)
+            )
+            
+            if cur.fetchone():
+                cur.execute(
+                    "DELETE FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE id = %s AND chat_id = %s",
+                    (order_id, chat_id)
+                )
+                conn.commit()
+                send_message(chat_id, f"✅ Заявка #{order_id} удалена")
+                return
+            
+            send_message(chat_id, f"❌ Заявка #{order_id} не найдена или вы не являетесь её владельцем")
     finally:
         conn.close()
 
