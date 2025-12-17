@@ -209,6 +209,32 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         else:
             save_carrier_order(chat_id, data)
     
+    elif callback_data.startswith('admin_'):
+        if str(chat_id) != ADMIN_CHAT_ID:
+            send_message(chat_id, "❌ У вас нет прав администратора")
+            return
+        
+        if callback_data == 'admin_stats':
+            show_admin_stats(chat_id)
+        elif callback_data == 'admin_delete':
+            state['admin_action'] = 'delete'
+            send_message(chat_id, "📝 Введите ID заявки для удаления (например: 123)")
+        elif callback_data == 'admin_block':
+            state['admin_action'] = 'block'
+            send_message(chat_id, "📝 Введите Chat ID пользователя для блокировки")
+        elif callback_data == 'admin_unblock':
+            state['admin_action'] = 'unblock'
+            send_message(chat_id, "📝 Введите Chat ID пользователя для разблокировки")
+        elif callback_data == 'admin_cleanup':
+            cleanup_old_orders(chat_id)
+    
+    elif callback_data.startswith('delete_order_'):
+        order_id = int(callback_data.replace('delete_order_', ''))
+        delete_user_order(chat_id, order_id)
+    
+    elif callback_data == 'my_orders':
+        show_my_orders(chat_id)
+    
     elif callback_data == 'cancel_create':
         user_states[chat_id] = {'step': 'choose_service', 'data': {}}
         send_message(
@@ -225,6 +251,27 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
 
 
 def process_message(chat_id: int, text: str):
+    if text == '/admin':
+        if str(chat_id) != ADMIN_CHAT_ID:
+            send_message(chat_id, "❌ У вас нет прав администратора")
+            return
+        
+        send_message(
+            chat_id,
+            "🔧 <b>Админ-панель</b>\n\n" +
+            "Выберите действие:",
+            {
+                'inline_keyboard': [
+                    [{'text': '📊 Статистика', 'callback_data': 'admin_stats'}],
+                    [{'text': '🗑️ Удалить заявку', 'callback_data': 'admin_delete'}],
+                    [{'text': '🚫 Заблокировать пользователя', 'callback_data': 'admin_block'}],
+                    [{'text': '✅ Разблокировать пользователя', 'callback_data': 'admin_unblock'}],
+                    [{'text': '🧹 Очистить старые заявки', 'callback_data': 'admin_cleanup'}]
+                ]
+            }
+        )
+        return
+    
     if text == '/start':
         user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
         send_message(
@@ -233,7 +280,8 @@ def process_message(chat_id: int, text: str):
             {
                 'keyboard': [
                     [{'text': '📦 Отправитель'}],
-                    [{'text': '🚚 Перевозчик'}]
+                    [{'text': '🚚 Перевозчик'}],
+                    [{'text': '📋 Мои заявки'}]
                 ],
                 'resize_keyboard': True,
                 'one_time_keyboard': False
@@ -330,9 +378,23 @@ def process_message(chat_id: int, text: str):
         send_message(chat_id, "📅 <b>Укажите дату погрузки</b>\n\nФормат: ДД.ММ.ГГГГ\nНапример: 25.12.2025")
     
     elif step == 'sender_loading_date':
-        data['loading_date'] = text
-        state['step'] = 'sender_loading_time'
-        send_message(chat_id, "🕐 <b>Укажите время погрузки</b>\n\nФормат: ЧЧ:ММ\nНапример: 14:30")
+        try:
+            loading_date = datetime.strptime(text, '%d.%m.%Y')
+            data['loading_date'] = loading_date.strftime('%Y-%m-%d')
+            
+            days_until = (loading_date - datetime.now()).days
+            if days_until > 1:
+                send_message(
+                    chat_id,
+                    f"⚠️ <b>Внимание!</b> Заявка будет автоматически удалена через 24 часа после указанной даты поставки.\n\n" +
+                    f"Дата поставки: {loading_date.strftime('%d.%m.%Y')}\n" +
+                    f"Заявка будет удалена: {(loading_date + timedelta(days=1)).strftime('%d.%m.%Y')}"
+                )
+            
+            state['step'] = 'sender_loading_time'
+            send_message(chat_id, "🕐 <b>Укажите время погрузки</b>\n\nФормат: ЧЧ:ММ\nНапример: 14:30")
+        except ValueError:
+            send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
     
     elif step == 'sender_loading_time':
         data['loading_time'] = text
@@ -762,6 +824,218 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
             send_notifications_to_subscribers(order_id, 'carrier', data)
             ask_notification_settings(chat_id, 'carrier', data)
     
+    finally:
+        conn.close()
+
+
+def get_blocked_users() -> list:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id FROM t_p52349012_telegram_bot_creatio.blocked_users")
+            return [str(row[0]) for row in cur.fetchall()]
+    except:
+        return []
+    finally:
+        conn.close()
+
+
+def show_admin_stats(chat_id: int):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.sender_orders")
+            sender_count = cur.fetchone()[0]
+            
+            cur.execute("SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.carrier_orders")
+            carrier_count = cur.fetchone()[0]
+            
+            cur.execute("SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.blocked_users")
+            blocked_count = cur.fetchone()[0]
+            
+            cur.execute("""
+                SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.sender_orders 
+                WHERE loading_date < CURRENT_DATE - INTERVAL '1 day'
+            """)
+            old_sender = cur.fetchone()[0]
+            
+            stats_text = (
+                f"📊 <b>Статистика бота</b>\n\n"
+                f"📦 Заявок отправителей: {sender_count}\n"
+                f"🚚 Заявок перевозчиков: {carrier_count}\n"
+                f"🚫 Заблокировано пользователей: {blocked_count}\n"
+                f"⏰ Устаревших заявок: {old_sender}"
+            )
+            
+            send_message(chat_id, stats_text)
+    finally:
+        conn.close()
+
+
+def handle_admin_input(chat_id: int, text: str, action: str):
+    state = user_states[chat_id]
+    
+    if action == 'delete':
+        if not text.isdigit():
+            send_message(chat_id, "❌ Неверный ID. Введите число.")
+            return
+        
+        order_id = int(text)
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s",
+                    (order_id,)
+                )
+                if cur.rowcount == 0:
+                    cur.execute(
+                        "DELETE FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE id = %s",
+                        (order_id,)
+                    )
+                
+                conn.commit()
+                
+                if cur.rowcount > 0:
+                    send_message(chat_id, f"✅ Заявка #{order_id} удалена")
+                else:
+                    send_message(chat_id, f"❌ Заявка #{order_id} не найдена")
+        finally:
+            conn.close()
+        
+        del state['admin_action']
+    
+    elif action == 'block':
+        if not text.isdigit():
+            send_message(chat_id, "❌ Неверный Chat ID. Введите число.")
+            return
+        
+        user_chat_id = int(text)
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO t_p52349012_telegram_bot_creatio.blocked_users (chat_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                    (user_chat_id,)
+                )
+                conn.commit()
+                send_message(chat_id, f"✅ Пользователь {user_chat_id} заблокирован")
+        finally:
+            conn.close()
+        
+        del state['admin_action']
+    
+    elif action == 'unblock':
+        if not text.isdigit():
+            send_message(chat_id, "❌ Неверный Chat ID. Введите число.")
+            return
+        
+        user_chat_id = int(text)
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM t_p52349012_telegram_bot_creatio.blocked_users WHERE chat_id = %s",
+                    (user_chat_id,)
+                )
+                conn.commit()
+                send_message(chat_id, f"✅ Пользователь {user_chat_id} разблокирован")
+        finally:
+            conn.close()
+        
+        del state['admin_action']
+
+
+def cleanup_old_orders(chat_id: int):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders 
+                WHERE loading_date < CURRENT_DATE - INTERVAL '1 day'
+            """)
+            deleted_count = cur.rowcount
+            conn.commit()
+            
+            send_message(chat_id, f"🧹 Удалено старых заявок: {deleted_count}")
+    finally:
+        conn.close()
+
+
+def show_my_orders(chat_id: int):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, marketplace, warehouse, loading_date FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE phone LIKE %s ORDER BY id DESC LIMIT 10",
+                (f'%{chat_id}%',)
+            )
+            sender_orders = cur.fetchall()
+            
+            cur.execute(
+                "SELECT id, marketplace, warehouse FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE phone LIKE %s ORDER BY id DESC LIMIT 10",
+                (f'%{chat_id}%',)
+            )
+            carrier_orders = cur.fetchall()
+            
+            if not sender_orders and not carrier_orders:
+                send_message(chat_id, "У вас пока нет заявок")
+                return
+            
+            message_parts = []
+            keyboard_buttons = []
+            
+            if sender_orders:
+                message_parts.append("📦 <b>Ваши заявки отправителя:</b>\n")
+                for order in sender_orders:
+                    message_parts.append(
+                        f"#{order['id']} - {order.get('marketplace', '-')} → {order.get('warehouse', '-')} ({order.get('loading_date', '-')})\n"
+                    )
+                    keyboard_buttons.append([{
+                        'text': f"🗑️ Удалить #{order['id']}",
+                        'callback_data': f"delete_order_{order['id']}"
+                    }])
+            
+            if carrier_orders:
+                message_parts.append("\n🚚 <b>Ваши заявки перевозчика:</b>\n")
+                for order in carrier_orders:
+                    message_parts.append(
+                        f"#{order['id']} - {order.get('marketplace', '-')} → {order.get('warehouse', '-')}\n"
+                    )
+                    keyboard_buttons.append([{
+                        'text': f"🗑️ Удалить #{order['id']}",
+                        'callback_data': f"delete_order_{order['id']}"
+                    }])
+            
+            send_message(
+                chat_id,
+                ''.join(message_parts),
+                {'inline_keyboard': keyboard_buttons} if keyboard_buttons else None
+            )
+    finally:
+        conn.close()
+
+
+def delete_user_order(chat_id: int, order_id: int):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s",
+                (order_id,)
+            )
+            if cur.rowcount == 0:
+                cur.execute(
+                    "DELETE FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE id = %s",
+                    (order_id,)
+                )
+            
+            conn.commit()
+            
+            if cur.rowcount > 0:
+                send_message(chat_id, f"✅ Заявка #{order_id} удалена")
+            else:
+                send_message(chat_id, f"❌ Заявка #{order_id} не найдена")
     finally:
         conn.close()
 
