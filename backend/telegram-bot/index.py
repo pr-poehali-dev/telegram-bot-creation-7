@@ -10,7 +10,8 @@ from typing import Dict, Any, Optional, List
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
 
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -26,6 +27,7 @@ MARKETPLACES = [
 ]
 
 user_states: Dict[int, Dict[str, Any]] = {}
+SESSION_TIMEOUT = 6 * 60 * 60
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     method: str = event.get('httpMethod', 'POST')
@@ -165,6 +167,13 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         return
     
     state = user_states[chat_id]
+    
+    if time.time() - state.get('last_activity', 0) > SESSION_TIMEOUT:
+        del user_states[chat_id]
+        send_message(chat_id, "⏰ Сессия истекла (6 часов). Введите /start для начала")
+        return
+    
+    state['last_activity'] = time.time()
     data = state.get('data', {})
     
     if callback_data.startswith('edit_'):
@@ -217,7 +226,7 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
 
 def process_message(chat_id: int, text: str):
     if text == '/start':
-        user_states[chat_id] = {'step': 'choose_service', 'data': {}}
+        user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
         send_message(
             chat_id,
             "👋 Добро пожаловать!\n\n<b>Выберите услугу:</b>",
@@ -233,7 +242,7 @@ def process_message(chat_id: int, text: str):
         return
     
     if chat_id not in user_states:
-        user_states[chat_id] = {'step': 'choose_service', 'data': {}}
+        user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
         send_message(
             chat_id,
             "Введите /start чтобы начать",
@@ -242,6 +251,13 @@ def process_message(chat_id: int, text: str):
         return
     
     state = user_states[chat_id]
+    
+    if time.time() - state.get('last_activity', 0) > SESSION_TIMEOUT:
+        del user_states[chat_id]
+        send_message(chat_id, "⏰ Сессия истекла (6 часов). Введите /start для начала")
+        return
+    
+    state['last_activity'] = time.time()
     step = state['step']
     data = state['data']
     
@@ -255,6 +271,10 @@ def process_message(chat_id: int, text: str):
         
         del state['editing_field']
         show_preview(chat_id, data)
+        return
+    
+    if step == 'setup_notifications':
+        handle_notification_setup(chat_id, text, data)
         return
     
     if step == 'choose_service':
@@ -455,6 +475,11 @@ def generate_and_send_label(chat_id: int, data: Dict[str, Any]):
         from reportlab.lib.pagesizes import mm
         from reportlab.pdfgen import canvas
         from reportlab.lib.units import mm as MM
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.graphics.barcode.qr import QrCodeWidget
+        from reportlab.graphics.shapes import Drawing
+        from reportlab.graphics import renderPDF
         import io
         
         buffer = io.BytesIO()
@@ -462,63 +487,91 @@ def generate_and_send_label(chat_id: int, data: Dict[str, Any]):
         label_size = data.get('label_size', '120x75')
         if label_size == '120x75':
             width, height = 120*MM, 75*MM
-            font_size_title = 14
-            font_size_normal = 10
+            font_size_title = 12
+            font_size_normal = 9
+            font_size_small = 7
+            qr_size = 15*MM
         else:
             width, height = 58*MM, 40*MM
-            font_size_title = 10
-            font_size_normal = 7
+            font_size_title = 8
+            font_size_normal = 6
+            font_size_small = 5
+            qr_size = 10*MM
         
         c = canvas.Canvas(buffer, pagesize=(width, height))
+        
+        bot_username = os.environ.get('TELEGRAM_BOT_USERNAME', 'your_bot')
+        qr_url = f"https://t.me/{bot_username}"
+        
+        qr_code = QrCodeWidget(qr_url)
+        qr_drawing = Drawing(qr_size, qr_size, transform=[qr_size/qr_code.width, 0, 0, qr_size/qr_code.width, 0, 0])
+        qr_drawing.add(qr_code)
+        
+        qr_x = width - qr_size - 5*MM
+        qr_y = height - qr_size - 5*MM
+        renderPDF.draw(qr_drawing, c, qr_x, qr_y)
         
         y_position = height - 10*MM
         x_margin = 5*MM
         
         c.setFont("Helvetica-Bold", font_size_title)
-        title = "ТЕРМОНАКЛЕЙКА ОТПРАВИТЕЛЯ" if data['type'] == 'sender' else "ТЕРМОНАКЛЕЙКА ПЕРЕВОЗЧИКА"
+        c.drawString(x_margin, y_position, "CARGO EXPRESS")
+        
+        y_position -= 6*MM
+        c.setFont("Helvetica", font_size_small)
+        title = "Otpravitel" if data['type'] == 'sender' else "Perevozchik"
         c.drawString(x_margin, y_position, title)
         
-        y_position -= 8*MM
+        y_position -= 6*MM
         c.setFont("Helvetica", font_size_normal)
         
-        c.drawString(x_margin, y_position, f"Маркетплейс: {temp_order_data.get('marketplace', '')}")
-        y_position -= 6*MM
+        marketplace = temp_order_data.get('marketplace', '')
+        c.drawString(x_margin, y_position, f"MP: {marketplace}")
+        y_position -= 5*MM
         
-        c.drawString(x_margin, y_position, f"Склад: {temp_order_data.get('warehouse', '')}")
-        y_position -= 6*MM
+        warehouse = temp_order_data.get('warehouse', '')
+        c.drawString(x_margin, y_position, f"Sklad: {warehouse}")
+        y_position -= 5*MM
         
         if data['type'] == 'sender':
             if temp_order_data.get('loading_address'):
-                c.drawString(x_margin, y_position, f"Адрес: {temp_order_data['loading_address'][:30]}")
-                y_position -= 5*MM
+                addr = temp_order_data['loading_address'][:25]
+                c.drawString(x_margin, y_position, f"Adres: {addr}")
+                y_position -= 4*MM
             
-            date_time = f"{temp_order_data.get('loading_date', '')} {temp_order_data.get('loading_time', '')}"
-            c.drawString(x_margin, y_position, f"Дата: {date_time}")
-            y_position -= 5*MM
+            date_str = temp_order_data.get('loading_date', '')
+            time_str = temp_order_data.get('loading_time', '')
+            c.drawString(x_margin, y_position, f"Data: {date_str} {time_str}")
+            y_position -= 4*MM
             
             pallet = temp_order_data.get('pallet_quantity', 0)
             boxes = temp_order_data.get('box_quantity', 0)
-            c.drawString(x_margin, y_position, f"Груз: {pallet} паллет, {boxes} коробок")
-            y_position -= 5*MM
+            c.drawString(x_margin, y_position, f"Gruz: {pallet} pal, {boxes} kor")
+            y_position -= 4*MM
             
-            c.drawString(x_margin, y_position, f"Отправитель: {temp_order_data.get('sender_name', '')}")
+            sender = temp_order_data.get('sender_name', '')[:20]
+            c.drawString(x_margin, y_position, f"FIO: {sender}")
         else:
-            car = f"{temp_order_data.get('car_brand', '')} {temp_order_data.get('car_model', '')}"
-            c.drawString(x_margin, y_position, f"Авто: {car}")
-            y_position -= 5*MM
+            car_brand = temp_order_data.get('car_brand', '')
+            car_model = temp_order_data.get('car_model', '')
+            c.drawString(x_margin, y_position, f"Avto: {car_brand} {car_model}")
+            y_position -= 4*MM
             
-            c.drawString(x_margin, y_position, f"Номер: {temp_order_data.get('license_plate', '')}")
-            y_position -= 5*MM
+            plate = temp_order_data.get('license_plate', '')
+            c.drawString(x_margin, y_position, f"Nomer: {plate}")
+            y_position -= 4*MM
             
             pallet = temp_order_data.get('pallet_capacity', 0)
             boxes = temp_order_data.get('box_capacity', 0)
-            c.drawString(x_margin, y_position, f"Вместимость: {pallet} паллет, {boxes} коробок")
-            y_position -= 5*MM
+            c.drawString(x_margin, y_position, f"Vmest: {pallet} pal, {boxes} kor")
+            y_position -= 4*MM
             
-            c.drawString(x_margin, y_position, f"Водитель: {temp_order_data.get('driver_name', '')}")
+            driver = temp_order_data.get('driver_name', '')[:20]
+            c.drawString(x_margin, y_position, f"Voditel: {driver}")
         
-        y_position -= 5*MM
-        c.drawString(x_margin, y_position, f"Телефон: {temp_order_data.get('phone', '')}")
+        y_position -= 4*MM
+        phone = temp_order_data.get('phone', '')
+        c.drawString(x_margin, y_position, f"Tel: {phone}")
         
         c.save()
         pdf_bytes = buffer.getvalue()
@@ -635,8 +688,8 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
             cur.execute(
                 """
                 INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
-                (loading_address, warehouse, loading_date, loading_time, pallet_quantity, box_quantity, sender_name, phone, label_size)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (loading_address, warehouse, loading_date, loading_time, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -648,7 +701,8 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                     data.get('box_quantity', 0),
                     data.get('sender_name'),
                     data.get('phone'),
-                    data.get('label_size')
+                    data.get('label_size'),
+                    data.get('marketplace')
                 )
             )
             
@@ -662,6 +716,7 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
             )
             
             notify_about_new_order(order_id, 'sender', data)
+            send_notifications_to_subscribers(order_id, 'sender', data)
             ask_notification_settings(chat_id, 'sender', data)
     
     finally:
@@ -676,8 +731,8 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
             cur.execute(
                 """
                 INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
-                (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, label_size)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, label_size, marketplace)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -689,7 +744,8 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                     data.get('box_capacity', 0),
                     data.get('driver_name'),
                     data.get('phone'),
-                    data.get('label_size')
+                    data.get('label_size'),
+                    data.get('marketplace')
                 )
             )
             
@@ -703,6 +759,7 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
             )
             
             notify_about_new_order(order_id, 'carrier', data)
+            send_notifications_to_subscribers(order_id, 'carrier', data)
             ask_notification_settings(chat_id, 'carrier', data)
     
     finally:
@@ -768,7 +825,112 @@ def ask_notification_settings(chat_id: int, user_type: str, data: Dict[str, Any]
     
     user_states[chat_id] = {
         'step': 'setup_notifications',
-        'data': {'user_type': user_type, 'warehouse': data.get('warehouse')}
+        'data': {'user_type': user_type, 'warehouse': data.get('warehouse')},
+        'last_activity': time.time()
     }
     
     send_message(chat_id, text, keyboard)
+
+
+def handle_notification_setup(chat_id: int, text: str, data: Dict[str, Any]):
+    user_type = data.get('user_type')
+    warehouse = data.get('warehouse')
+    
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    
+    try:
+        with conn.cursor() as cur:
+            if 'да' in text.lower() and 'всех' in text.lower():
+                cur.execute(
+                    """
+                    INSERT INTO t_p52349012_telegram_bot_creatio.user_subscriptions
+                    (chat_id, user_type, subscription_type, warehouse_filter)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (chat_id, user_type, 'all', None)
+                )
+                send_message(
+                    chat_id,
+                    f"✅ Вы подписаны на все новые заявки!\n\nВведите /start для создания новой заявки",
+                    {'remove_keyboard': True}
+                )
+            elif 'только' in text.lower() or warehouse:
+                target_warehouse = warehouse if 'только' in text.lower() else text
+                cur.execute(
+                    """
+                    INSERT INTO t_p52349012_telegram_bot_creatio.user_subscriptions
+                    (chat_id, user_type, subscription_type, warehouse_filter)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (chat_id, user_type, 'warehouse', target_warehouse)
+                )
+                send_message(
+                    chat_id,
+                    f"✅ Вы подписаны на заявки по складу: {target_warehouse}\n\nВведите /start для создания новой заявки",
+                    {'remove_keyboard': True}
+                )
+            else:
+                send_message(
+                    chat_id,
+                    "❌ Подписка на уведомления отключена\n\nВведите /start для создания новой заявки",
+                    {'remove_keyboard': True}
+                )
+            
+            conn.commit()
+            
+            del user_states[chat_id]
+    
+    finally:
+        conn.close()
+
+
+def send_notifications_to_subscribers(order_id: int, order_type: str, data: Dict[str, Any]):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            target_user_type = 'carrier' if order_type == 'sender' else 'sender'
+            warehouse = data.get('warehouse', '')
+            
+            cur.execute(
+                """
+                SELECT DISTINCT chat_id FROM t_p52349012_telegram_bot_creatio.user_subscriptions
+                WHERE user_type = %s
+                AND (subscription_type = 'all' OR (subscription_type = 'warehouse' AND warehouse_filter = %s))
+                """,
+                (target_user_type, warehouse)
+            )
+            
+            subscribers = cur.fetchall()
+            
+            if order_type == 'sender':
+                message = (
+                    f"🆕 <b>Новая заявка отправителя #{order_id}</b>\n\n"
+                    f"🏪 Маркетплейс: {data.get('marketplace', '-')}\n"
+                    f"📍 Склад: {data.get('warehouse')}\n"
+                    f"📅 Дата: {data.get('loading_date')} {data.get('loading_time')}\n"
+                    f"📦 Груз: {data.get('pallet_quantity', 0)} паллет, {data.get('box_quantity', 0)} коробок\n"
+                    f"👤 Отправитель: {data.get('sender_name')}\n"
+                    f"📱 Телефон: {data.get('phone')}"
+                )
+            else:
+                message = (
+                    f"🆕 <b>Новая заявка перевозчика #{order_id}</b>\n\n"
+                    f"🏪 Маркетплейс: {data.get('marketplace', '-')}\n"
+                    f"📍 Склад: {data.get('warehouse')}\n"
+                    f"🚗 Авто: {data.get('car_brand')} {data.get('car_model')}\n"
+                    f"📦 Вместимость: {data.get('pallet_capacity', 0)} паллет, {data.get('box_capacity', 0)} коробок\n"
+                    f"👤 Водитель: {data.get('driver_name')}\n"
+                    f"📱 Телефон: {data.get('phone')}"
+                )
+            
+            for subscriber in subscribers:
+                try:
+                    send_message(subscriber['chat_id'], message)
+                except:
+                    pass
+    
+    finally:
+        conn.close()
