@@ -207,8 +207,12 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
     elif callback_data == 'confirm_create':
         if data.get('type') == 'sender':
             save_sender_order(chat_id, data)
+            if chat_id in user_states:
+                del user_states[chat_id]
         else:
             save_carrier_order(chat_id, data)
+            if chat_id in user_states:
+                del user_states[chat_id]
     
     elif callback_data.startswith('admin_'):
         if str(chat_id) != ADMIN_CHAT_ID:
@@ -688,6 +692,7 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
             
             notify_about_new_order(order_id, 'sender', data)
             send_notifications_to_subscribers(order_id, 'sender', data)
+            find_matching_orders_by_date(order_id, 'sender', data)
             ask_notification_settings(chat_id, 'sender', data)
     
     finally:
@@ -732,6 +737,7 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
             
             notify_about_new_order(order_id, 'carrier', data)
             send_notifications_to_subscribers(order_id, 'carrier', data)
+            find_matching_orders_by_date(order_id, 'carrier', data)
             ask_notification_settings(chat_id, 'carrier', data)
     
     finally:
@@ -1194,6 +1200,167 @@ def send_notifications_to_subscribers(order_id: int, order_type: str, data: Dict
                     send_message(subscriber['chat_id'], message)
                 except:
                     pass
+    
+    finally:
+        conn.close()
+
+
+def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str, Any]):
+    """
+    Автоматически подбирает заявки с совпадающими датами:
+    - Для отправителя ищет перевозчиков с такой же датой погрузки
+    - Для перевозчика ищет отправителей с совпадающей датой
+    """
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if order_type == 'sender':
+                # Отправитель создал заявку - ищем перевозчиков с такой же датой погрузки
+                loading_date = data.get('loading_date')
+                warehouse = data.get('warehouse')
+                marketplace = data.get('marketplace')
+                
+                if not loading_date:
+                    return
+                
+                cur.execute(
+                    """
+                    SELECT id, phone, driver_name, car_brand, car_model, 
+                           pallet_capacity, box_capacity, loading_date, arrival_date
+                    FROM t_p52349012_telegram_bot_creatio.carrier_orders
+                    WHERE loading_date = %s
+                    AND warehouse = %s
+                    AND marketplace = %s
+                    ORDER BY id DESC
+                    LIMIT 5
+                    """,
+                    (loading_date, warehouse, marketplace)
+                )
+                
+                matches = cur.fetchall()
+                
+                if matches:
+                    # Отправляем отправителю список подходящих перевозчиков
+                    sender_phone = data.get('phone', '').replace('+', '')
+                    if sender_phone.isdigit():
+                        sender_chat_id = int(sender_phone) if len(sender_phone) > 9 else None
+                        
+                        if sender_chat_id:
+                            message = f"🎯 <b>Найдены подходящие перевозчики для вашей заявки #{order_id}!</b>\n\n"
+                            message += f"📅 Дата погрузки: {loading_date}\n"
+                            message += f"📍 Склад: {warehouse}\n\n"
+                            
+                            for i, match in enumerate(matches, 1):
+                                message += (
+                                    f"<b>{i}. {match['driver_name']}</b>\n"
+                                    f"🚗 {match['car_brand']} {match['car_model']}\n"
+                                    f"📦 Вместимость: {match['pallet_capacity']} паллет, {match['box_capacity']} коробок\n"
+                                    f"📱 Телефон: {match['phone']}\n"
+                                    f"📅 Прибытие на склад: {match.get('arrival_date', '-')}\n\n"
+                                )
+                            
+                            try:
+                                send_message(sender_chat_id, message)
+                            except:
+                                pass
+                    
+                    # Отправляем перевозчикам уведомление о новом подходящем отправителе
+                    for match in matches:
+                        carrier_phone = match['phone'].replace('+', '')
+                        if carrier_phone.isdigit():
+                            carrier_chat_id = int(carrier_phone) if len(carrier_phone) > 9 else None
+                            
+                            if carrier_chat_id:
+                                carrier_message = (
+                                    f"🎯 <b>Найдена подходящая заявка отправителя #{order_id}!</b>\n\n"
+                                    f"📅 Дата погрузки: {loading_date}\n"
+                                    f"📍 Склад: {warehouse}\n"
+                                    f"🏪 Маркетплейс: {marketplace}\n"
+                                    f"📦 Груз: {data.get('pallet_quantity', 0)} паллет, {data.get('box_quantity', 0)} коробок\n"
+                                    f"👤 Отправитель: {data.get('sender_name')}\n"
+                                    f"📱 Телефон: {data.get('phone')}\n"
+                                    f"🏠 Адрес: {data.get('loading_address')}"
+                                )
+                                
+                                try:
+                                    send_message(carrier_chat_id, carrier_message)
+                                except:
+                                    pass
+            
+            else:
+                # Перевозчик создал заявку - ищем отправителей с подходящей датой
+                loading_date = data.get('loading_date')
+                warehouse = data.get('warehouse')
+                marketplace = data.get('marketplace')
+                
+                if not loading_date:
+                    return
+                
+                cur.execute(
+                    """
+                    SELECT id, phone, sender_name, loading_address, 
+                           pallet_quantity, box_quantity, loading_date, loading_time
+                    FROM t_p52349012_telegram_bot_creatio.sender_orders
+                    WHERE loading_date = %s
+                    AND warehouse = %s
+                    AND marketplace = %s
+                    ORDER BY id DESC
+                    LIMIT 5
+                    """,
+                    (loading_date, warehouse, marketplace)
+                )
+                
+                matches = cur.fetchall()
+                
+                if matches:
+                    # Отправляем перевозчику список подходящих отправителей
+                    carrier_phone = data.get('phone', '').replace('+', '')
+                    if carrier_phone.isdigit():
+                        carrier_chat_id = int(carrier_phone) if len(carrier_phone) > 9 else None
+                        
+                        if carrier_chat_id:
+                            message = f"🎯 <b>Найдены подходящие отправители для вашей заявки #{order_id}!</b>\n\n"
+                            message += f"📅 Дата погрузки: {loading_date}\n"
+                            message += f"📍 Склад: {warehouse}\n\n"
+                            
+                            for i, match in enumerate(matches, 1):
+                                message += (
+                                    f"<b>{i}. {match['sender_name']}</b>\n"
+                                    f"📦 Груз: {match['pallet_quantity']} паллет, {match['box_quantity']} коробок\n"
+                                    f"🏠 Адрес: {match['loading_address']}\n"
+                                    f"📱 Телефон: {match['phone']}\n"
+                                    f"🕐 Время погрузки: {match.get('loading_time', '-')}\n\n"
+                                )
+                            
+                            try:
+                                send_message(carrier_chat_id, message)
+                            except:
+                                pass
+                    
+                    # Отправляем отправителям уведомление о новом подходящем перевозчике
+                    for match in matches:
+                        sender_phone = match['phone'].replace('+', '')
+                        if sender_phone.isdigit():
+                            sender_chat_id = int(sender_phone) if len(sender_phone) > 9 else None
+                            
+                            if sender_chat_id:
+                                sender_message = (
+                                    f"🎯 <b>Найдена подходящая заявка перевозчика #{order_id}!</b>\n\n"
+                                    f"📅 Дата погрузки: {loading_date}\n"
+                                    f"📍 Склад: {warehouse}\n"
+                                    f"🏪 Маркетплейс: {marketplace}\n"
+                                    f"🚗 Авто: {data.get('car_brand')} {data.get('car_model')}\n"
+                                    f"📦 Вместимость: {data.get('pallet_capacity', 0)} паллет, {data.get('box_capacity', 0)} коробок\n"
+                                    f"👤 Водитель: {data.get('driver_name')}\n"
+                                    f"📱 Телефон: {data.get('phone')}\n"
+                                    f"📅 Прибытие на склад: {data.get('arrival_date', '-')}"
+                                )
+                                
+                                try:
+                                    send_message(sender_chat_id, sender_message)
+                                except:
+                                    pass
     
     finally:
         conn.close()
