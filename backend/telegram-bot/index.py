@@ -69,6 +69,104 @@ def validate_text_length(text: str, max_length: int = MAX_TEXT_LENGTH) -> bool:
     return len(text) <= max_length
 
 
+def log_security_event(chat_id: int, event_type: str, details: str, severity: str = 'medium'):
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO t_p52349012_telegram_bot_creatio.security_logs 
+                (chat_id, event_type, details, severity)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (chat_id, event_type, details, severity)
+            )
+            conn.commit()
+        conn.close()
+    except:
+        pass
+
+
+def auto_block_user(chat_id: int, reason: str):
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO t_p52349012_telegram_bot_creatio.auto_blocked_users (chat_id, reason)
+                VALUES (%s, %s)
+                ON CONFLICT (chat_id) DO UPDATE SET reason = %s, blocked_at = CURRENT_TIMESTAMP
+                """,
+                (chat_id, reason, reason)
+            )
+            
+            cur.execute(
+                """
+                INSERT INTO t_p52349012_telegram_bot_creatio.blocked_users (chat_id)
+                VALUES (%s)
+                ON CONFLICT (chat_id) DO NOTHING
+                """,
+                (chat_id,)
+            )
+            
+            conn.commit()
+        conn.close()
+        
+        log_security_event(chat_id, 'auto_block', reason, 'high')
+        notify_admin_about_block(chat_id, reason)
+    except:
+        pass
+
+
+def notify_admin_about_block(chat_id: int, reason: str):
+    try:
+        admin_id = ADMIN_CHAT_ID
+        if admin_id:
+            message = f"""
+🚨 <b>Автоматическая блокировка пользователя</b>
+
+👤 Chat ID: <code>{chat_id}</code>
+📋 Причина: {reason}
+⏰ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}
+
+Проверьте логи в админ-панели.
+"""
+            send_message(int(admin_id), message)
+    except:
+        pass
+
+
+def is_user_blocked(chat_id: int) -> bool:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT chat_id FROM t_p52349012_telegram_bot_creatio.blocked_users WHERE chat_id = %s",
+                (chat_id,)
+            )
+            return cur.fetchone() is not None
+    except:
+        return False
+    finally:
+        conn.close()
+
+
+def get_user_daily_limit(chat_id: int) -> int:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT daily_order_limit FROM t_p52349012_telegram_bot_creatio.user_limits WHERE chat_id = %s",
+                (chat_id,)
+            )
+            result = cur.fetchone()
+            return result[0] if result else MAX_ORDERS_PER_DAY
+    except:
+        return MAX_ORDERS_PER_DAY
+    finally:
+        conn.close()
+
+
 def get_user_orders_today(chat_id: int) -> int:
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
@@ -76,15 +174,54 @@ def get_user_orders_today(chat_id: int) -> int:
             cur.execute("""
                 SELECT COUNT(*) FROM (
                     SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders
-                    WHERE created_at::date = CURRENT_DATE
+                    WHERE chat_id = %s AND created_at::date = CURRENT_DATE
                     UNION ALL
                     SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders
-                    WHERE created_at::date = CURRENT_DATE
+                    WHERE chat_id = %s AND created_at::date = CURRENT_DATE
                 ) AS combined
-            """)
+            """, (chat_id, chat_id))
             return cur.fetchone()[0]
     except:
         return 0
+    finally:
+        conn.close()
+
+
+def check_suspicious_activity(chat_id: int):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.security_logs
+                WHERE chat_id = %s AND created_at > NOW() - INTERVAL '1 hour'
+            """, (chat_id,))
+            
+            events_last_hour = cur.fetchone()[0]
+            
+            if events_last_hour > 50:
+                auto_block_user(chat_id, f'Подозрительная активность: {events_last_hour} событий за час')
+                return True
+            
+            cur.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders
+                    WHERE chat_id = %s AND created_at::date = CURRENT_DATE
+                    UNION ALL
+                    SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders
+                    WHERE chat_id = %s AND created_at::date = CURRENT_DATE
+                ) AS combined
+            """, (chat_id, chat_id))
+            
+            orders_today = cur.fetchone()[0]
+            user_limit = get_user_daily_limit(chat_id)
+            
+            if orders_today > user_limit * 2:
+                auto_block_user(chat_id, f'Превышение лимита в 2 раза: {orders_today} заявок при лимите {user_limit}')
+                return True
+            
+            return False
+    except:
+        return False
     finally:
         conn.close()
 
@@ -140,8 +277,22 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             callback_data = callback['data']
             message_id = callback['message']['message_id']
             
+            if is_user_blocked(chat_id):
+                send_message(chat_id, "🚫 Ваш аккаунт заблокирован за подозрительную активность. Обратитесь к администратору.")
+                log_security_event(chat_id, 'blocked_attempt', 'Попытка использовать бота после блокировки', 'high')
+                return {
+                    'statusCode': 403,
+                    'headers': {'Content-Type': 'application/json'},
+                    'body': json.dumps({'error': 'User blocked'}),
+                    'isBase64Encoded': False
+                }
+            
             if is_rate_limited(chat_id):
+                log_security_event(chat_id, 'rate_limit', 'Превышен лимит запросов', 'medium')
                 send_message(chat_id, "⏳ Слишком много запросов. Подождите минуту.")
+                
+                check_suspicious_activity(chat_id)
+                
                 return {
                     'statusCode': 429,
                     'headers': {'Content-Type': 'application/json'},
@@ -175,8 +326,22 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         chat_id = message['chat']['id']
         text = message.get('text', '')
         
+        if is_user_blocked(chat_id):
+            send_message(chat_id, "🚫 Ваш аккаунт заблокирован за подозрительную активность. Обратитесь к администратору.")
+            log_security_event(chat_id, 'blocked_attempt', 'Попытка использовать бота после блокировки', 'high')
+            return {
+                'statusCode': 403,
+                'headers': {'Content-Type': 'application/json'},
+                'body': json.dumps({'error': 'User blocked'}),
+                'isBase64Encoded': False
+            }
+        
         if is_rate_limited(chat_id):
+            log_security_event(chat_id, 'rate_limit', 'Превышен лимит запросов', 'medium')
             send_message(chat_id, "⏳ Слишком много запросов. Подождите минуту.")
+            
+            check_suspicious_activity(chat_id)
+            
             return {
                 'statusCode': 429,
                 'headers': {'Content-Type': 'application/json'},
@@ -185,6 +350,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             }
         
         if not validate_text_length(text):
+            log_security_event(chat_id, 'text_too_long', f'Текст {len(text)} символов', 'low')
             send_message(chat_id, f"❌ Текст слишком длинный (максимум {MAX_TEXT_LENGTH} символов)")
             return {
                 'statusCode': 400,
@@ -337,6 +503,13 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
             send_message(chat_id, "📝 Введите ID заявки для удаления (например: 123)")
         elif callback_data == 'admin_cleanup':
             cleanup_old_orders(chat_id)
+        elif callback_data == 'admin_security_logs':
+            show_security_logs(chat_id)
+        elif callback_data == 'admin_blocked_users':
+            show_blocked_users(chat_id)
+        elif callback_data == 'admin_set_limit':
+            state['admin_action'] = 'set_limit'
+            send_message(chat_id, "📝 Введите Chat ID пользователя и новый лимит через пробел\n\nНапример: 123456789 50")
     
     elif callback_data.startswith('delete_order_'):
         order_id = int(callback_data.replace('delete_order_', ''))
@@ -361,6 +534,18 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
 
 
 def process_message(chat_id: int, text: str):
+    if text.startswith('/unblock '):
+        if str(chat_id) != ADMIN_CHAT_ID:
+            send_message(chat_id, "❌ У вас нет прав администратора")
+            return
+        
+        try:
+            target_chat_id = int(text.split()[1])
+            unblock_user(chat_id, target_chat_id)
+        except (ValueError, IndexError):
+            send_message(chat_id, "❌ Неверный формат. Используйте: /unblock CHAT_ID")
+        return
+    
     if text == '/admin':
         if str(chat_id) != ADMIN_CHAT_ID:
             send_message(chat_id, "❌ У вас нет прав администратора")
@@ -376,6 +561,9 @@ def process_message(chat_id: int, text: str):
                 'inline_keyboard': [
                     [{'text': '📊 Статистика', 'callback_data': 'admin_stats'}],
                     [{'text': '📈 Еженедельный отчёт', 'callback_data': 'admin_weekly'}],
+                    [{'text': '🔒 Логи безопасности', 'callback_data': 'admin_security_logs'}],
+                    [{'text': '🚫 Заблокированные', 'callback_data': 'admin_blocked_users'}],
+                    [{'text': '⚙️ Установить лимит', 'callback_data': 'admin_set_limit'}],
                     [{'text': '🗑️ Удалить заявку', 'callback_data': 'admin_delete'}],
                     [{'text': '🧹 Очистить старые заявки', 'callback_data': 'admin_cleanup'}],
                     [{'text': '🏠 Выйти из админ-панели', 'callback_data': 'admin_exit'}]
@@ -420,6 +608,41 @@ def process_message(chat_id: int, text: str):
     state['last_activity'] = time.time()
     step = state['step']
     data = state['data']
+    
+    if state.get('admin_action'):
+        action = state['admin_action']
+        
+        if action == 'delete':
+            try:
+                order_id = int(text)
+                delete_order_admin(chat_id, order_id)
+            except ValueError:
+                send_message(chat_id, "❌ Неверный формат ID")
+        
+        elif action == 'set_limit':
+            try:
+                parts = text.split()
+                if len(parts) != 2:
+                    send_message(chat_id, "❌ Неверный формат. Используйте: Chat_ID Лимит")
+                    del state['admin_action']
+                    return
+                
+                target_chat_id = int(parts[0])
+                new_limit = int(parts[1])
+                
+                if new_limit < 1 or new_limit > 100:
+                    send_message(chat_id, "❌ Лимит должен быть от 1 до 100")
+                    del state['admin_action']
+                    return
+                
+                set_user_limit(target_chat_id, new_limit)
+                send_message(chat_id, f"✅ Лимит для пользователя {target_chat_id} установлен: {new_limit} заявок/день")
+            except ValueError:
+                send_message(chat_id, "❌ Неверный формат. Используйте: Chat_ID Лимит")
+        
+        if 'admin_action' in state:
+            del state['admin_action']
+        return
     
     if state.get('editing_field'):
         field = state['editing_field']
@@ -769,10 +992,14 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
 
 
 def save_sender_order(chat_id: int, data: Dict[str, Any]):
-    if get_user_orders_today(chat_id) >= MAX_ORDERS_PER_DAY:
+    user_limit = get_user_daily_limit(chat_id)
+    orders_today = get_user_orders_today(chat_id)
+    
+    if orders_today >= user_limit:
+        log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
         send_message(
             chat_id,
-            f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {MAX_ORDERS_PER_DAY} заявок в день.\nПопробуйте завтра.",
+            f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {user_limit} заявок в день.\nПопробуйте завтра.",
             {'remove_keyboard': True}
         )
         return
@@ -824,10 +1051,14 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
 
 
 def save_carrier_order(chat_id: int, data: Dict[str, Any]):
-    if get_user_orders_today(chat_id) >= MAX_ORDERS_PER_DAY:
+    user_limit = get_user_daily_limit(chat_id)
+    orders_today = get_user_orders_today(chat_id)
+    
+    if orders_today >= user_limit:
+        log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
         send_message(
             chat_id,
-            f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {MAX_ORDERS_PER_DAY} заявок в день.\nПопробуйте завтра.",
+            f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {user_limit} заявок в день.\nПопробуйте завтра.",
             {'remove_keyboard': True}
         )
         return
@@ -1508,5 +1739,170 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                                 except:
                                     pass
     
+    finally:
+        conn.close()
+
+
+def set_user_limit(chat_id: int, limit: int):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO t_p52349012_telegram_bot_creatio.user_limits (chat_id, daily_order_limit)
+                VALUES (%s, %s)
+                ON CONFLICT (chat_id) 
+                DO UPDATE SET daily_order_limit = %s, updated_at = CURRENT_TIMESTAMP
+                """,
+                (chat_id, limit, limit)
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def show_security_logs(chat_id: int):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT chat_id, event_type, details, severity, created_at
+                FROM t_p52349012_telegram_bot_creatio.security_logs
+                ORDER BY created_at DESC
+                LIMIT 20
+            """)
+            
+            logs = cur.fetchall()
+            
+            if not logs:
+                send_message(chat_id, "📋 Нет записей в логах безопасности")
+                return
+            
+            message = "🔒 <b>ЛОГИ БЕЗОПАСНОСТИ (последние 20)</b>\n\n"
+            
+            for log in logs:
+                severity_emoji = {
+                    'low': '🟢',
+                    'medium': '🟡',
+                    'high': '🔴'
+                }.get(log['severity'], '⚪')
+                
+                time_str = log['created_at'].strftime('%d.%m %H:%M')
+                message += (
+                    f"{severity_emoji} <code>{log['chat_id']}</code> - {log['event_type']}\n"
+                    f"   {log['details']}\n"
+                    f"   ⏰ {time_str}\n\n"
+                )
+            
+            cur.execute("""
+                SELECT event_type, COUNT(*) as cnt
+                FROM t_p52349012_telegram_bot_creatio.security_logs
+                WHERE created_at > NOW() - INTERVAL '24 hours'
+                GROUP BY event_type
+                ORDER BY cnt DESC
+                LIMIT 5
+            """)
+            
+            stats = cur.fetchall()
+            
+            if stats:
+                message += "\n📊 <b>Статистика за 24 часа:</b>\n"
+                for stat in stats:
+                    message += f"• {stat['event_type']}: {stat['cnt']}\n"
+            
+            send_message(chat_id, message)
+    finally:
+        conn.close()
+
+
+def show_blocked_users(chat_id: int):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT ab.chat_id, ab.reason, ab.blocked_at, ab.is_reviewed
+                FROM t_p52349012_telegram_bot_creatio.auto_blocked_users ab
+                ORDER BY ab.blocked_at DESC
+                LIMIT 20
+            """)
+            
+            blocked = cur.fetchall()
+            
+            if not blocked:
+                send_message(chat_id, "👥 Нет заблокированных пользователей")
+                return
+            
+            message = "🚫 <b>ЗАБЛОКИРОВАННЫЕ ПОЛЬЗОВАТЕЛИ</b>\n\n"
+            
+            for user in blocked:
+                review_status = "✅ Проверено" if user['is_reviewed'] else "⏳ Ожидает проверки"
+                time_str = user['blocked_at'].strftime('%d.%m.%Y %H:%M')
+                
+                message += (
+                    f"👤 Chat ID: <code>{user['chat_id']}</code>\n"
+                    f"📋 Причина: {user['reason']}\n"
+                    f"⏰ Заблокирован: {time_str}\n"
+                    f"🔍 Статус: {review_status}\n\n"
+                )
+            
+            message += "\n💡 Для разблокировки отправьте команду:\n"
+            message += "<code>/unblock CHAT_ID</code>"
+            
+            send_message(chat_id, message)
+    finally:
+        conn.close()
+
+
+def delete_order_admin(chat_id: int, order_id: int):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s",
+                (order_id,)
+            )
+            
+            if cur.rowcount == 0:
+                cur.execute(
+                    "DELETE FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE id = %s",
+                    (order_id,)
+                )
+            
+            conn.commit()
+            
+            if cur.rowcount > 0:
+                send_message(chat_id, f"✅ Заявка #{order_id} удалена администратором")
+            else:
+                send_message(chat_id, f"❌ Заявка #{order_id} не найдена")
+    finally:
+        conn.close()
+
+
+def unblock_user(admin_chat_id: int, target_chat_id: int):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM t_p52349012_telegram_bot_creatio.blocked_users WHERE chat_id = %s",
+                (target_chat_id,)
+            )
+            
+            cur.execute(
+                """
+                UPDATE t_p52349012_telegram_bot_creatio.auto_blocked_users
+                SET is_reviewed = TRUE, reviewed_by_admin = TRUE
+                WHERE chat_id = %s
+                """,
+                (target_chat_id,)
+            )
+            
+            conn.commit()
+            
+            send_message(admin_chat_id, f"✅ Пользователь {target_chat_id} разблокирован")
+            
+            try:
+                send_message(target_chat_id, "✅ Ваш аккаунт разблокирован администратором. Введите /start для продолжения работы.")
+            except:
+                pass
     finally:
         conn.close()
