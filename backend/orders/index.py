@@ -3,21 +3,54 @@ import os
 from typing import Dict, Any, List
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import requests
 
 def get_db_connection():
-    """Создание подключения к базе данных"""
     dsn = os.environ.get('DATABASE_URL')
     return psycopg2.connect(dsn)
 
+def send_telegram_notification(order_type: str, order_id: int, data: Dict[str, Any]):
+    bot_token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+    chat_id = os.environ.get('TELEGRAM_ADMIN_CHAT_ID', '')
+    
+    if not bot_token or not chat_id:
+        return
+    
+    if order_type == 'sender':
+        message = (
+            f"📦 <b>Новая заявка отправителя #{order_id}</b>\n\n"
+            f"📍 Склад: {data.get('warehouse', 'Не указан')}\n"
+            f"🏠 Адрес погрузки: {data.get('loading_address', 'Не указан')}\n"
+            f"📅 Дата: {data.get('loading_date', '')} {data.get('loading_time', '')}\n"
+            f"📦 Груз: {data.get('pallet_quantity', 0)} паллет, {data.get('box_quantity', 0)} коробок\n"
+            f"👤 Отправитель: {data.get('sender_name', '')}\n"
+            f"📱 Телефон: {data.get('phone', '')}"
+        )
+    else:
+        message = (
+            f"🚚 <b>Новая заявка перевозчика #{order_id}</b>\n\n"
+            f"🚗 Автомобиль: {data.get('car_brand', '')} {data.get('car_model', '')}\n"
+            f"🔢 Номер: {data.get('license_plate', '')}\n"
+            f"📦 Вместимость: {data.get('pallet_capacity', 0)} паллет, {data.get('box_capacity', 0)} коробок\n"
+            f"📍 Склад: {data.get('warehouse', 'Не указан')}\n"
+            f"👤 Водитель: {data.get('driver_name', '')}\n"
+            f"📱 Телефон: {data.get('phone', '')}"
+        )
+    
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={
+                'chat_id': chat_id,
+                'text': message,
+                'parse_mode': 'HTML'
+            }
+        )
+    except:
+        pass
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """
-    API для работы с заявками грузоперевозок
-    GET / - получить все заявки
-    POST /sender - создать заявку отправителя
-    POST /carrier - создать заявку перевозчика
-    """
     method: str = event.get('httpMethod', 'GET')
-    path: str = event.get('path', '/')
     
     headers = {
         'Content-Type': 'application/json',
@@ -40,19 +73,21 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         if method == 'GET':
             sender_query = """
-                SELECT 'sender' as type, id, pickup_address as field1, pickup_comments as field2, 
-                       warehouse as field3, delivery_date::text as field4, cargo_type as field5, 
-                       cargo_quantity::text as field6, sender_name as name, phone, 
-                       photo_url as field7, label_size as field8, created_at
+                SELECT 'sender' as type, id, loading_address, warehouse, 
+                       loading_date::text, loading_time::text,
+                       pallet_quantity, box_quantity, sender_name, phone, 
+                       photo_url, label_size, created_at
                 FROM sender_orders
+                ORDER BY created_at DESC
             """
             
             carrier_query = """
-                SELECT 'carrier' as type, id, car_brand as field1, car_model as field2,
-                       license_plate as field3, NULL as field4, capacity_type as field5,
-                       capacity_quantity::text as field6, warehouse as field8, driver_name as name,
-                       phone, photo_url as field7, license_number as field9, created_at
+                SELECT 'carrier' as type, id, car_brand, car_model,
+                       license_plate, pallet_capacity, box_capacity,
+                       warehouse, driver_name, phone, photo_url, 
+                       license_number, created_at
                 FROM carrier_orders
+                ORDER BY created_at DESC
             """
             
             cursor.execute(sender_query)
@@ -67,16 +102,16 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 result.append({
                     'type': 'sender',
                     'id': order['id'],
-                    'pickupAddress': order['field1'],
-                    'pickupComments': order['field2'],
-                    'warehouse': order['field3'],
-                    'deliveryDate': order['field4'],
-                    'cargoType': order['field5'],
-                    'cargoQuantity': order['field6'],
-                    'senderName': order['name'],
+                    'loadingAddress': order['loading_address'],
+                    'warehouse': order['warehouse'],
+                    'loadingDate': order['loading_date'],
+                    'loadingTime': order['loading_time'],
+                    'palletQuantity': order['pallet_quantity'],
+                    'boxQuantity': order['box_quantity'],
+                    'senderName': order['sender_name'],
                     'phone': order['phone'],
-                    'photo': order['field7'],
-                    'labelSize': order['field8'],
+                    'photo': order['photo_url'],
+                    'labelSize': order['label_size'],
                     'createdAt': order['created_at'].isoformat() if order['created_at'] else None
                 })
             
@@ -84,20 +119,18 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 result.append({
                     'type': 'carrier',
                     'id': order['id'],
-                    'carBrand': order['field1'],
-                    'carModel': order['field2'],
-                    'licensePlate': order['field3'],
-                    'capacityType': order['field5'],
-                    'capacityQuantity': order['field6'],
-                    'warehouse': order['field8'],
-                    'driverName': order['name'],
+                    'carBrand': order['car_brand'],
+                    'carModel': order['car_model'],
+                    'licensePlate': order['license_plate'],
+                    'palletCapacity': order['pallet_capacity'],
+                    'boxCapacity': order['box_capacity'],
+                    'warehouse': order['warehouse'],
+                    'driverName': order['driver_name'],
                     'phone': order['phone'],
-                    'photo': order['field7'],
-                    'licenseNumber': order.get('field9'),
+                    'photo': order['photo_url'],
+                    'licenseNumber': order['license_number'],
                     'createdAt': order['created_at'].isoformat() if order['created_at'] else None
                 })
-            
-            result.sort(key=lambda x: x['createdAt'], reverse=True)
             
             cursor.close()
             conn.close()
@@ -115,78 +148,99 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             
             if order_type == 'sender':
                 cursor.execute("""
-                    INSERT INTO sender_orders 
-                    (pickup_address, pickup_comments, warehouse, delivery_date, cargo_type, 
-                     cargo_quantity, sender_name, phone, photo_url, label_size)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO sender_orders (
+                        loading_address, warehouse, loading_date, loading_time,
+                        pallet_quantity, box_quantity, sender_name, phone, label_size,
+                        cargo_type, cargo_quantity
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id, created_at
                 """, (
-                    body.get('pickupAddress'),
-                    body.get('pickupComments'),
+                    body.get('loadingAddress') or body.get('pickupAddress'),
                     body.get('warehouse'),
-                    body.get('deliveryDate') or None,
-                    body.get('cargoType'),
-                    int(body.get('cargoQuantity')) if body.get('cargoQuantity') else None,
+                    body.get('loadingDate') or body.get('deliveryDate'),
+                    body.get('loadingTime'),
+                    body.get('palletQuantity', 0),
+                    body.get('boxQuantity', 0),
                     body.get('senderName'),
                     body.get('phone'),
-                    body.get('photo'),
-                    body.get('labelSize')
+                    body.get('labelSize', '120x75'),
+                    'pallet',
+                    0
                 ))
                 
+                result = cursor.fetchone()
+                conn.commit()
+                
+                send_telegram_notification('sender', result['id'], body)
+                
+                cursor.close()
+                conn.close()
+                
+                return {
+                    'statusCode': 201,
+                    'headers': headers,
+                    'body': json.dumps({
+                        'id': result['id'],
+                        'created_at': result['created_at'].isoformat()
+                    }),
+                    'isBase64Encoded': False
+                }
+            
             elif order_type == 'carrier':
                 cursor.execute("""
-                    INSERT INTO carrier_orders 
-                    (car_brand, car_model, license_plate, capacity_type, capacity_quantity,
-                     warehouse, driver_name, phone, license_number, photo_url)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO carrier_orders (
+                        car_brand, car_model, license_plate, pallet_capacity,
+                        box_capacity, warehouse, driver_name, phone,
+                        capacity_type, capacity_quantity
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id, created_at
                 """, (
                     body.get('carBrand'),
                     body.get('carModel'),
                     body.get('licensePlate'),
-                    body.get('capacityType'),
-                    int(body.get('capacityQuantity')) if body.get('capacityQuantity') else None,
-                    body.get('warehouse'),
+                    body.get('palletCapacity', 0),
+                    body.get('boxCapacity', 0),
+                    body.get('warehouse', ''),
                     body.get('driverName'),
                     body.get('phone'),
-                    body.get('licenseNumber'),
-                    body.get('photo')
+                    'pallet',
+                    0
                 ))
-            else:
+                
+                result = cursor.fetchone()
+                conn.commit()
+                
+                send_telegram_notification('carrier', result['id'], body)
+                
                 cursor.close()
                 conn.close()
+                
+                return {
+                    'statusCode': 201,
+                    'headers': headers,
+                    'body': json.dumps({
+                        'id': result['id'],
+                        'created_at': result['created_at'].isoformat()
+                    }),
+                    'isBase64Encoded': False
+                }
+            
+            else:
                 return {
                     'statusCode': 400,
                     'headers': headers,
                     'body': json.dumps({'error': 'Invalid order type'}),
                     'isBase64Encoded': False
                 }
-            
-            result = cursor.fetchone()
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            return {
-                'statusCode': 201,
-                'headers': headers,
-                'body': json.dumps({
-                    'id': result['id'],
-                    'created_at': result['created_at'].isoformat()
-                }),
-                'isBase64Encoded': False
-            }
         
         else:
-            cursor.close()
-            conn.close()
             return {
                 'statusCode': 405,
                 'headers': headers,
                 'body': json.dumps({'error': 'Method not allowed'}),
                 'isBase64Encoded': False
             }
-            
+    
     except Exception as e:
         return {
             'statusCode': 500,

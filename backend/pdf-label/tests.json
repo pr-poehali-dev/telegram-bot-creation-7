@@ -1,0 +1,26 @@
+{
+  "tests": [
+    {
+      "name": "Generate sender label 120x75",
+      "method": "POST",
+      "path": "/",
+      "body": {
+        "order_id": 1,
+        "order_type": "sender",
+        "label_size": "120x75"
+      },
+      "expectedStatus": 200
+    },
+    {
+      "name": "Generate carrier label 58x40",
+      "method": "POST",
+      "path": "/",
+      "body": {
+        "order_id": 1,
+        "order_type": "carrier",
+        "label_size": "58x40"
+      },
+      "expectedStatus": 200
+    }
+  ]
+}

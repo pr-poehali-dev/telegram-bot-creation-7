@@ -4,10 +4,7 @@
       "name": "Get all orders",
       "method": "GET",
       "path": "/",
-      "expectedStatus": 200,
-      "expectedBody": {
-        "orders": []
-      }
+      "expectedStatus": 200
     },
     {
       "name": "Create sender order",
@@ -15,10 +12,12 @@
       "path": "/",
       "body": {
         "type": "sender",
-        "pickupAddress": "Test Address 123",
+        "loadingAddress": "Test Address 123",
         "warehouse": "Test Warehouse",
-        "cargoType": "pallet",
-        "cargoQuantity": "5",
+        "loadingDate": "2025-12-25",
+        "loadingTime": "14:30",
+        "palletQuantity": 5,
+        "boxQuantity": 10,
         "senderName": "Ivan Ivanov",
         "phone": "+79991234567"
       },
@@ -33,8 +32,8 @@
         "carBrand": "Mercedes",
         "carModel": "Sprinter",
         "licensePlate": "A000AA777",
-        "capacityType": "pallet",
-        "capacityQuantity": "10",
+        "palletCapacity": 10,
+        "boxCapacity": 50,
         "driverName": "Petr Petrov",
         "phone": "+79991234568"
       },

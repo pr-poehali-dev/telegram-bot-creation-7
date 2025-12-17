@@ -1,0 +1,10 @@
+{
+  "tests": [
+    {
+      "name": "Bot health check",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200
+    }
+  ]
+}
