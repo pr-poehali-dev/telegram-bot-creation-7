@@ -144,7 +144,8 @@ def is_user_blocked(chat_id: int) -> bool:
                 "SELECT chat_id FROM t_p52349012_telegram_bot_creatio.blocked_users WHERE chat_id = %s",
                 (chat_id,)
             )
-            return cur.fetchone() is not None
+            result = cur.fetchone() is not None
+        return result
     except:
         return False
     finally:
