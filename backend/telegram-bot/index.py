@@ -1211,69 +1211,79 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
 
 
 def save_sender_order(chat_id: int, data: Dict[str, Any]):
-    print(f"[DEBUG] save_sender_order called for chat_id={chat_id}, data={data}")
-    user_limit = get_user_daily_limit(chat_id)
-    orders_today = get_user_orders_today(chat_id)
-    print(f"[DEBUG] user_limit={user_limit}, orders_today={orders_today}")
-    
-    if orders_today >= user_limit:
-        log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
-        send_message(
-            chat_id,
-            f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {user_limit} заявок в день.\nПопробуйте завтра.",
-            {'remove_keyboard': True}
-        )
-        return
-    
-    print("[DEBUG] Connecting to database...")
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    
     try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            warehouse_norm = normalize_warehouse(data.get('warehouse', ''))
-            cur.execute(
-                """
-                INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
-                (loading_address, warehouse, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace, chat_id, rate, warehouse_normalized)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (
-                    data.get('loading_address'),
-                    data.get('warehouse'),
-                    data.get('loading_date'),
-                    data.get('loading_time'),
-                    data.get('delivery_date'),
-                    data.get('pallet_quantity', 0),
-                    data.get('box_quantity', 0),
-                    data.get('sender_name'),
-                    data.get('phone'),
-                    data.get('label_size'),
-                    data.get('marketplace'),
-                    chat_id,
-                    data.get('rate'),
-                    warehouse_norm
-                )
-            )
-            
-            order_id = cur.fetchone()['id']
-            conn.commit()
-            
+        print(f"[DEBUG] save_sender_order called for chat_id={chat_id}, data={data}")
+        send_message(chat_id, "⏳ Создаю заявку...")
+        
+        user_limit = get_user_daily_limit(chat_id)
+        orders_today = get_user_orders_today(chat_id)
+        print(f"[DEBUG] user_limit={user_limit}, orders_today={orders_today}")
+        
+        if orders_today >= user_limit:
+            log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
             send_message(
                 chat_id,
-                f"✅ <b>Заявка #{order_id} создана!</b>\n\nПеревозчики получили уведомление о вашем грузе.",
+                f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {user_limit} заявок в день.\nПопробуйте завтра.",
                 {'remove_keyboard': True}
             )
-            
-            send_label_to_user(chat_id, order_id, 'sender', data.get('label_size', '120x75'))
-            
-            notify_about_new_order(order_id, 'sender', data)
-            send_notifications_to_subscribers(order_id, 'sender', data)
-            find_matching_orders_by_date(order_id, 'sender', data)
-            ask_notification_settings(chat_id, 'sender', data)
+            return
+        
+        print("[DEBUG] Connecting to database...")
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                warehouse_norm = normalize_warehouse(data.get('warehouse', ''))
+                print(f"[DEBUG] Executing INSERT query...")
+                cur.execute(
+                    """
+                    INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
+                    (loading_address, warehouse, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace, chat_id, rate, warehouse_normalized)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        data.get('loading_address'),
+                        data.get('warehouse'),
+                        data.get('loading_date'),
+                        data.get('loading_time'),
+                        data.get('delivery_date'),
+                        data.get('pallet_quantity', 0),
+                        data.get('box_quantity', 0),
+                        data.get('sender_name'),
+                        data.get('phone'),
+                        data.get('label_size'),
+                        data.get('marketplace'),
+                        chat_id,
+                        data.get('rate'),
+                        warehouse_norm
+                    )
+                )
+                
+                print("[DEBUG] Fetching order_id...")
+                order_id = cur.fetchone()['id']
+                conn.commit()
+                print(f"[DEBUG] Order created with id={order_id}")
+                
+                send_message(
+                    chat_id,
+                    f"✅ <b>Заявка #{order_id} создана!</b>\n\nПеревозчики получили уведомление о вашем грузе.",
+                    {'remove_keyboard': True}
+                )
+                
+                send_label_to_user(chat_id, order_id, 'sender', data.get('label_size', '120x75'))
+                
+                notify_about_new_order(order_id, 'sender', data)
+                send_notifications_to_subscribers(order_id, 'sender', data)
+                find_matching_orders_by_date(order_id, 'sender', data)
+                ask_notification_settings(chat_id, 'sender', data)
+        
+        finally:
+            conn.close()
     
-    finally:
-        conn.close()
+    except Exception as e:
+        print(f"[ERROR] save_sender_order failed: {str(e)}")
+        send_message(chat_id, f"❌ Ошибка создания заявки: {str(e)}\n\nПопробуйте ещё раз или обратитесь к администратору.")
 
 
 def save_carrier_order(chat_id: int, data: Dict[str, Any]):
