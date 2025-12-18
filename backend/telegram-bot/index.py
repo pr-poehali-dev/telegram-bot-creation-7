@@ -38,6 +38,36 @@ MAX_TEXT_LENGTH = 500
 MAX_ORDERS_PER_DAY = 10
 TELEGRAM_IPS = ['149.154.160.0/20', '91.108.4.0/22']
 
+def normalize_warehouse(warehouse: str) -> str:
+    """Нормализует название склада для fuzzy matching"""
+    if not warehouse:
+        return ''
+    
+    # Приводим к нижнему регистру
+    normalized = warehouse.lower().strip()
+    
+    # Убираем лишние пробелы
+    normalized = ' '.join(normalized.split())
+    
+    # Общие замены для частых опечаток
+    replacements = {
+        'коледино': 'каледино',
+        'электросталь': 'електросталь',
+        'подольск': 'падольск',
+        'щелково': 'щолково',
+        'чехов': 'чихов',
+        'е': 'е',  # ё -> е
+        'ё': 'е'
+    }
+    
+    for wrong, correct in replacements.items():
+        normalized = normalized.replace(wrong, correct)
+    
+    # Убираем все кроме букв, цифр и пробелов
+    normalized = ''.join(c for c in normalized if c.isalnum() or c.isspace())
+    
+    return normalized
+
 def is_telegram_request(ip: str) -> bool:
     if not ip:
         return True
@@ -608,7 +638,12 @@ def process_message(chat_id: int, text: str):
         user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
         send_message(
             chat_id,
-            "👋 Добро пожаловать!\n\n<b>Выберите услугу:</b>",
+            "👋 <b>Добро пожаловать!</b>\n\n"
+            "⚠️ <b>Важно:</b>\n"
+            "• Сохраняйте скрины переписок\n"
+            "• Сверяйте данные авто с заявкой\n"
+            "• Будьте внимательны к деталям\n\n"
+            "<b>Выберите услугу:</b>",
             {
                 'keyboard': [
                     [{'text': '📦 Отправитель'}],
@@ -806,19 +841,27 @@ def process_message(chat_id: int, text: str):
         elif not phone.startswith('+'):
             phone = '+7' + phone
         data['phone'] = phone
-        state['step'] = 'sender_label_size'
-        send_message(
-            chat_id,
-            "🏷️ <b>Выберите термоэтикетку с инфо для водителя</b>",
-            {
-                'keyboard': [
-                    [{'text': '120x75 мм'}],
-                    [{'text': '58x40 мм'}]
-                ],
-                'resize_keyboard': True,
-                'one_time_keyboard': True
-            }
-        )
+        state['step'] = 'sender_rate'
+        send_message(chat_id, "💵 <b>Укажите желаемую ставку в рублях</b>\n\nНапример: 5000", {'remove_keyboard': True})
+    
+    elif step == 'sender_rate':
+        if text.isdigit():
+            data['rate'] = int(text)
+            state['step'] = 'sender_label_size'
+            send_message(
+                chat_id,
+                "🏷️ <b>Выберите термоэтикетку с инфо для водителя</b>",
+                {
+                    'keyboard': [
+                        [{'text': '120x75 мм'}],
+                        [{'text': '58x40 мм'}]
+                    ],
+                    'resize_keyboard': True,
+                    'one_time_keyboard': True
+                }
+            )
+        else:
+            send_message(chat_id, "❌ Неверный формат. Укажите цифру. Например: 5000")
     
     elif step == 'sender_label_size':
         if '120' in text:
@@ -875,27 +918,19 @@ def process_message(chat_id: int, text: str):
         elif not phone.startswith('+'):
             phone = '+7' + phone
         data['phone'] = phone
-        state['step'] = 'carrier_rate'
-        send_message(chat_id, "💵 <b>Укажите ставку в рублях</b>\n\nНапример: 5000", {'remove_keyboard': True})
-    
-    elif step == 'carrier_rate':
-        if text.isdigit():
-            data['rate'] = int(text)
-            state['step'] = 'carrier_hydroboard'
-            send_message(
-                chat_id,
-                "🚚 <b>Гидроборт</b>",
-                {
-                    'keyboard': [
-                        [{'text': 'Есть'}],
-                        [{'text': 'Нету'}]
-                    ],
-                    'resize_keyboard': True,
-                    'one_time_keyboard': True
-                }
-            )
-        else:
-            send_message(chat_id, "❌ Неверный формат. Укажите цифру. Например: 5000")
+        state['step'] = 'carrier_hydroboard'
+        send_message(
+            chat_id,
+            "🚚 <b>Гидроборт</b>",
+            {
+                'keyboard': [
+                    [{'text': 'Есть'}],
+                    [{'text': 'Нету'}]
+                ],
+                'resize_keyboard': True,
+                'one_time_keyboard': True
+            }
+        )
     
     elif step == 'carrier_hydroboard':
         data['hydroboard'] = 'Есть' if 'есть' in text.lower() else 'Нету'
@@ -1017,6 +1052,7 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
             f"📦 Коробки: {data.get('box_quantity', 0)}\n"
             f"👤 Отправитель: {data.get('sender_name', '-')}\n"
             f"📱 Телефон: {data.get('phone', '-')}\n"
+            f"💵 Ставка: {data.get('rate', '-')} руб.\n"
             f"🏷️ Термоэтикетка: {data.get('label_size', '-')}"
         )
         
@@ -1039,7 +1075,8 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
                     {'text': '✏️ ФИО', 'callback_data': 'edit_sender_name'}
                 ],
                 [
-                    {'text': '✏️ Телефон', 'callback_data': 'edit_phone'}
+                    {'text': '✏️ Телефон', 'callback_data': 'edit_phone'},
+                    {'text': '✏️ Ставка', 'callback_data': 'edit_rate'}
                 ],
                 [
                     {'text': '✅ СОЗДАТЬ ЗАЯВКУ', 'callback_data': 'confirm_create'}
@@ -1059,7 +1096,6 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
             f"🔢 Гос. номер: {data.get('license_plate', '-')}\n"
             f"📦 Вместимость паллет: {data.get('pallet_capacity', 0)}\n"
             f"📦 Вместимость коробок: {data.get('box_capacity', 0)}\n"
-            f"💵 Ставка: {data.get('rate', '-')} руб.\n"
             f"🚚 Гидроборт: {data.get('hydroboard', '-')}\n"
             f"👤 Водитель: {data.get('driver_name', '-')}\n"
             f"📱 Телефон: {data.get('phone', '-')}\n"
@@ -1083,17 +1119,14 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
                 ],
                 [
                     {'text': '✏️ Коробки', 'callback_data': 'edit_box_capacity'},
-                    {'text': '✏️ Ставка', 'callback_data': 'edit_rate'}
+                    {'text': '✏️ Гидроборт', 'callback_data': 'edit_hydroboard'}
                 ],
                 [
-                    {'text': '✏️ Гидроборт', 'callback_data': 'edit_hydroboard'},
-                    {'text': '✏️ Водитель', 'callback_data': 'edit_driver_name'}
+                    {'text': '✏️ Водитель', 'callback_data': 'edit_driver_name'},
+                    {'text': '✏️ Телефон', 'callback_data': 'edit_phone'}
                 ],
                 [
-                    {'text': '✏️ Телефон', 'callback_data': 'edit_phone'},
-                    {'text': '✏️ Дата погрузки', 'callback_data': 'edit_loading_date'}
-                ],
-                [
+                    {'text': '✏️ Дата погрузки', 'callback_data': 'edit_loading_date'},
                     {'text': '✏️ Дата прибытия', 'callback_data': 'edit_arrival_date'}
                 ],
                 [
@@ -1125,11 +1158,12 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
     
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            warehouse_norm = normalize_warehouse(data.get('warehouse', ''))
             cur.execute(
                 """
                 INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
-                (loading_address, warehouse, loading_date, loading_time, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace, chat_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (loading_address, warehouse, loading_date, loading_time, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace, chat_id, rate, warehouse_normalized)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -1143,7 +1177,9 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                     data.get('phone'),
                     data.get('label_size'),
                     data.get('marketplace'),
-                    chat_id
+                    chat_id,
+                    data.get('rate'),
+                    warehouse_norm
                 )
             )
             
@@ -1184,10 +1220,11 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
     
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            warehouse_norm = normalize_warehouse(data.get('warehouse', ''))
             cur.execute(
                 """
                 INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
-                (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, marketplace, loading_date, arrival_date, rate, hydroboard, chat_id)
+                (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, marketplace, loading_date, arrival_date, hydroboard, chat_id, warehouse_normalized)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
@@ -1203,9 +1240,9 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                     data.get('marketplace'),
                     data.get('loading_date'),
                     data.get('arrival_date'),
-                    data.get('rate'),
                     data.get('hydroboard'),
-                    chat_id
+                    chat_id,
+                    warehouse_norm
                 )
             )
             
@@ -1659,13 +1696,18 @@ def send_notifications_to_subscribers(order_id: int, order_type: str, data: Dict
             target_user_type = 'carrier' if order_type == 'sender' else 'sender'
             warehouse = data.get('warehouse', '')
             
+            warehouse_norm = normalize_warehouse(warehouse)
             cur.execute(
                 """
-                SELECT DISTINCT chat_id FROM t_p52349012_telegram_bot_creatio.user_subscriptions
-                WHERE user_type = %s
-                AND (subscription_type = 'all' OR (subscription_type = 'warehouse' AND warehouse_filter = %s))
+                SELECT DISTINCT us.chat_id, us.warehouse_filter 
+                FROM t_p52349012_telegram_bot_creatio.user_subscriptions us
+                WHERE us.user_type = %s
+                AND (us.subscription_type = 'all' 
+                     OR (us.subscription_type = 'warehouse' 
+                         AND (us.warehouse_filter = %s 
+                              OR %s = ANY(SELECT normalize_warehouse(us.warehouse_filter)))))
                 """,
-                (target_user_type, warehouse)
+                (target_user_type, warehouse, warehouse_norm)
             )
             
             subscribers = cur.fetchall()
@@ -1677,6 +1719,7 @@ def send_notifications_to_subscribers(order_id: int, order_type: str, data: Dict
                     f"📍 Склад: {data.get('warehouse')}\n"
                     f"📅 Дата: {data.get('loading_date')} {data.get('loading_time')}\n"
                     f"📦 Груз: {data.get('pallet_quantity', 0)} паллет, {data.get('box_quantity', 0)} коробок\n"
+                    f"💵 Ставка: {data.get('rate', '-')} руб.\n"
                     f"👤 Отправитель: {data.get('sender_name')}\n"
                     f"📱 Телефон: {data.get('phone')}"
                 )
@@ -1687,6 +1730,7 @@ def send_notifications_to_subscribers(order_id: int, order_type: str, data: Dict
                     f"📍 Склад: {data.get('warehouse')}\n"
                     f"🚗 Авто: {data.get('car_brand')} {data.get('car_model')}\n"
                     f"📦 Вместимость: {data.get('pallet_capacity', 0)} паллет, {data.get('box_capacity', 0)} коробок\n"
+                    f"🚚 Гидроборт: {data.get('hydroboard', '-')}\n"
                     f"👤 Водитель: {data.get('driver_name')}\n"
                     f"📱 Телефон: {data.get('phone')}"
                 )
@@ -1720,18 +1764,19 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                 if not loading_date:
                     return
                 
+                warehouse_norm = normalize_warehouse(warehouse)
                 cur.execute(
                     """
                     SELECT id, phone, driver_name, car_brand, car_model, 
-                           pallet_capacity, box_capacity, loading_date, arrival_date
+                           pallet_capacity, box_capacity, loading_date, arrival_date, hydroboard, warehouse
                     FROM t_p52349012_telegram_bot_creatio.carrier_orders
                     WHERE loading_date = %s
-                    AND warehouse = %s
+                    AND (warehouse_normalized = %s OR warehouse = %s)
                     AND marketplace = %s
                     ORDER BY id DESC
                     LIMIT 5
                     """,
-                    (loading_date, warehouse, marketplace)
+                    (loading_date, warehouse_norm, warehouse, marketplace)
                 )
                 
                 matches = cur.fetchall()
@@ -1752,6 +1797,7 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                                     f"<b>{i}. {match['driver_name']}</b>\n"
                                     f"🚗 {match['car_brand']} {match['car_model']}\n"
                                     f"📦 Вместимость: {match['pallet_capacity']} паллет, {match['box_capacity']} коробок\n"
+                                    f"🚚 Гидроборт: {match.get('hydroboard', '-')}\n"
                                     f"📱 Телефон: {match['phone']}\n"
                                     f"📅 Прибытие на склад: {match.get('arrival_date', '-')}\n\n"
                                 )
@@ -1774,6 +1820,7 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                                     f"📍 Склад: {warehouse}\n"
                                     f"🏪 Маркетплейс: {marketplace}\n"
                                     f"📦 Груз: {data.get('pallet_quantity', 0)} паллет, {data.get('box_quantity', 0)} коробок\n"
+                                    f"💵 Ставка: {data.get('rate', '-')} руб.\n"
                                     f"👤 Отправитель: {data.get('sender_name')}\n"
                                     f"📱 Телефон: {data.get('phone')}\n"
                                     f"🏠 Адрес: {data.get('loading_address')}"
@@ -1793,18 +1840,19 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                 if not loading_date:
                     return
                 
+                warehouse_norm = normalize_warehouse(warehouse)
                 cur.execute(
                     """
                     SELECT id, phone, sender_name, loading_address, 
-                           pallet_quantity, box_quantity, loading_date, loading_time
+                           pallet_quantity, box_quantity, loading_date, loading_time, rate, warehouse
                     FROM t_p52349012_telegram_bot_creatio.sender_orders
                     WHERE loading_date = %s
-                    AND warehouse = %s
+                    AND (warehouse_normalized = %s OR warehouse = %s)
                     AND marketplace = %s
                     ORDER BY id DESC
                     LIMIT 5
                     """,
-                    (loading_date, warehouse, marketplace)
+                    (loading_date, warehouse_norm, warehouse, marketplace)
                 )
                 
                 matches = cur.fetchall()
@@ -1824,6 +1872,7 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                                 message += (
                                     f"<b>{i}. {match['sender_name']}</b>\n"
                                     f"📦 Груз: {match['pallet_quantity']} паллет, {match['box_quantity']} коробок\n"
+                                    f"💵 Ставка: {match.get('rate', '-')} руб.\n"
                                     f"🏠 Адрес: {match['loading_address']}\n"
                                     f"📱 Телефон: {match['phone']}\n"
                                     f"🕐 Время погрузки: {match.get('loading_time', '-')}\n\n"
@@ -1848,6 +1897,7 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                                     f"🏪 Маркетплейс: {marketplace}\n"
                                     f"🚗 Авто: {data.get('car_brand')} {data.get('car_model')}\n"
                                     f"📦 Вместимость: {data.get('pallet_capacity', 0)} паллет, {data.get('box_capacity', 0)} коробок\n"
+                                    f"🚚 Гидроборт: {data.get('hydroboard', '-')}\n"
                                     f"👤 Водитель: {data.get('driver_name')}\n"
                                     f"📱 Телефон: {data.get('phone')}\n"
                                     f"📅 Прибытие на склад: {data.get('arrival_date', '-')}"
