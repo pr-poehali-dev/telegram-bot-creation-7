@@ -260,6 +260,8 @@ def check_suspicious_activity(chat_id: int):
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     method: str = event.get('httpMethod', 'POST')
     
+    print(f"Handler called: method={method}, event={json.dumps(event)[:200]}")
+    
     if method == 'OPTIONS':
         return {
             'statusCode': 200,

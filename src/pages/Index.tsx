@@ -10,15 +10,30 @@ import OrdersList from "@/components/OrdersList";
 import type { UserType, SenderData, CarrierData, Order } from "@/types";
 
 const API_URL = "https://functions.poehali.dev/05090f07-7a7b-45e9-a7e8-33227bbce72e";
+const WEBHOOK_SETUP_URL = "https://functions.poehali.dev/f7bd14f4-3a9a-4553-b211-958a2e947b5b";
 
 const Index = () => {
   const [userType, setUserType] = useState<UserType>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(false);
+  const [webhookSetup, setWebhookSetup] = useState(false);
 
   useEffect(() => {
     loadOrders();
+    setupWebhook();
   }, []);
+
+  const setupWebhook = async () => {
+    try {
+      const response = await fetch(WEBHOOK_SETUP_URL);
+      const data = await response.json();
+      if (data.success) {
+        setWebhookSetup(true);
+      }
+    } catch (error) {
+      console.error("Ошибка настройки webhook:", error);
+    }
+  };
 
   const loadOrders = async () => {
     try {
@@ -163,7 +178,17 @@ const Index = () => {
   };
 
   if (!userType) {
-    return <UserTypeSelector onSelectType={setUserType} />;
+    return (
+      <div>
+        {webhookSetup && (
+          <div className="fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2">
+            <Icon name="Check" size={20} />
+            <span>Webhook настроен</span>
+          </div>
+        )}
+        <UserTypeSelector onSelectType={setUserType} />
+      </div>
+    );
   }
 
   return (
