@@ -1277,16 +1277,16 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                 
                 send_message(
                     chat_id,
-                    f"✅ <b>Заявка #{order_id} создана!</b>\n\nПеревозчики получили уведомление о вашем грузе.",
+                    f"✅ <b>Заявка #{order_id} создана!</b>\n\nВаш груз добавлен в систему.",
                     {'remove_keyboard': True}
                 )
                 
-                send_label_to_user(chat_id, order_id, 'sender', data.get('label_size', '120x75'))
-                
-                notify_about_new_order(order_id, 'sender', data)
-                send_notifications_to_subscribers(order_id, 'sender', data)
-                find_matching_orders_by_date(order_id, 'sender', data)
-                ask_notification_settings(chat_id, 'sender', data)
+                # Временно отключены уведомления (требуют доработки структуры)
+                # send_label_to_user(chat_id, order_id, 'sender', data.get('label_size', '120x75'))
+                # notify_about_new_order(order_id, 'sender', data)
+                # send_notifications_to_subscribers(order_id, 'sender', data)
+                # find_matching_orders_by_date(order_id, 'sender', data)
+                # ask_notification_settings(chat_id, 'sender', data)
         
         finally:
             conn.close()
