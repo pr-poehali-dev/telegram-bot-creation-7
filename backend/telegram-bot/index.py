@@ -1234,12 +1234,25 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 warehouse_norm = normalize_warehouse(data.get('warehouse', ''))
+                
+                # Определяем тип груза на основе количества
+                pallet_qty = data.get('pallet_quantity', 0)
+                box_qty = data.get('box_quantity', 0)
+                if pallet_qty > 0 and box_qty > 0:
+                    cargo_type = 'Паллеты и коробки'
+                elif pallet_qty > 0:
+                    cargo_type = 'Паллеты'
+                elif box_qty > 0:
+                    cargo_type = 'Коробки'
+                else:
+                    cargo_type = 'Не указано'
+                
                 print(f"[DEBUG] Executing INSERT query...")
                 cur.execute(
                     """
                     INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
-                    (loading_address, warehouse, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace, chat_id, rate, warehouse_normalized)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (loading_address, warehouse, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace, chat_id, rate, warehouse_normalized, cargo_type)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (
@@ -1256,7 +1269,8 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                         data.get('marketplace'),
                         chat_id,
                         data.get('rate'),
-                        warehouse_norm
+                        warehouse_norm,
+                        cargo_type
                     )
                 )
                 
