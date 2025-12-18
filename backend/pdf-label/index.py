@@ -191,12 +191,6 @@ def generate_label_pdf(order: Dict[str, Any], order_type: str, label_size: str) 
         except:
             c.setFont("Helvetica", font_size_normal)
         
-        if order.get('loading_date'):
-            date_str = str(order['loading_date'])
-            time_str = str(order.get('loading_time', ''))
-            c.drawString(x_margin, y_position, f"Дата: {date_str} {time_str}")
-            y_position -= 4*MM
-        
         pallet_qty = order.get('pallet_quantity', 0)
         box_qty = order.get('box_quantity', 0)
         if pallet_qty or box_qty:
