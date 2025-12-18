@@ -460,13 +460,44 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
             'pallet_capacity': 'вместимость паллет',
             'box_capacity': 'вместимость коробок',
             'driver_name': 'ФИО водителя',
-            'arrival_date': 'дату прибытия на склад (ДД.ММ.ГГГГ)'
+            'arrival_date': 'дату прибытия на склад (ДД.ММ.ГГГГ)',
+            'rate': 'ставку в рублях',
+            'hydroboard': 'гидроборт'
         }
         
-        send_message(
-            chat_id,
-            f"✏️ Введите новое значение для <b>{field_names.get(field, field)}</b>:"
-        )
+        if field == 'hydroboard':
+            send_message(
+                chat_id,
+                "🚚 <b>Гидроборт</b>",
+                {
+                    'keyboard': [
+                        [{'text': 'Есть'}],
+                        [{'text': 'Нету'}]
+                    ],
+                    'resize_keyboard': True,
+                    'one_time_keyboard': True
+                }
+            )
+        elif field in ['loading_date', 'arrival_date']:
+            today = datetime.now()
+            tomorrow = today + timedelta(days=1)
+            send_message(
+                chat_id,
+                f"✏️ Введите новое значение для <b>{field_names.get(field, field)}</b>:\n\nВыберите из вариантов или введите дату вручную\nФормат: ДД.ММ.ГГГГ",
+                {
+                    'keyboard': [
+                        [{'text': f'🔴 Сегодня ({today.strftime("%d.%m.%Y")})'}],
+                        [{'text': f'🟢 Завтра ({tomorrow.strftime("%d.%m.%Y")})'}]
+                    ],
+                    'resize_keyboard': True,
+                    'one_time_keyboard': True
+                }
+            )
+        else:
+            send_message(
+                chat_id,
+                f"✏️ Введите новое значение для <b>{field_names.get(field, field)}</b>:"
+            )
     
     elif callback_data == 'confirm_create':
         if data.get('type') == 'sender':
@@ -648,15 +679,24 @@ def process_message(chat_id: int, text: str):
     if state.get('editing_field'):
         field = state['editing_field']
         
-        if field in ['pallet_quantity', 'box_quantity', 'pallet_capacity', 'box_capacity']:
+        if field in ['pallet_quantity', 'box_quantity', 'pallet_capacity', 'box_capacity', 'rate']:
             data[field] = int(text) if text.isdigit() else 0
         elif field in ['loading_date', 'arrival_date']:
             try:
-                date_obj = datetime.strptime(text, '%d.%m.%Y')
+                if 'сегодня' in text.lower() or '🔴' in text:
+                    date_obj = datetime.now()
+                elif 'завтра' in text.lower() or '🟢' in text:
+                    date_obj = datetime.now() + timedelta(days=1)
+                else:
+                    text_cleaned = text.replace('🔴', '').replace('🟢', '').strip()
+                    text_cleaned = text_cleaned.split('(')[-1].replace(')', '').strip() if '(' in text_cleaned else text_cleaned
+                    date_obj = datetime.strptime(text_cleaned, '%d.%m.%Y')
                 data[field] = date_obj.strftime('%Y-%m-%d')
             except ValueError:
                 send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
                 return
+        elif field == 'hydroboard':
+            data[field] = 'Есть' if 'есть' in text.lower() else 'Нету'
         else:
             data[field] = text
         
@@ -769,7 +809,7 @@ def process_message(chat_id: int, text: str):
         state['step'] = 'sender_label_size'
         send_message(
             chat_id,
-            "🏷️ <b>Выберите термонаклейку с инфо для водителя</b>",
+            "🏷️ <b>Выберите термоэтикетку с инфо для водителя</b>",
             {
                 'keyboard': [
                     [{'text': '120x75 мм'}],
@@ -786,7 +826,7 @@ def process_message(chat_id: int, text: str):
         else:
             data['label_size'] = '58x40'
         
-        send_message(chat_id, "📋 Термонаклейка будет отправлена после создания заявки")
+        send_message(chat_id, "📋 Термоэтикетка будет отправлена после создания заявки")
         state['step'] = 'show_preview'
         show_preview(chat_id, data)
     
@@ -835,21 +875,91 @@ def process_message(chat_id: int, text: str):
         elif not phone.startswith('+'):
             phone = '+7' + phone
         data['phone'] = phone
+        state['step'] = 'carrier_rate'
+        send_message(chat_id, "💵 <b>Укажите ставку в рублях</b>\n\nНапример: 5000", {'remove_keyboard': True})
+    
+    elif step == 'carrier_rate':
+        if text.isdigit():
+            data['rate'] = int(text)
+            state['step'] = 'carrier_hydroboard'
+            send_message(
+                chat_id,
+                "🚚 <b>Гидроборт</b>",
+                {
+                    'keyboard': [
+                        [{'text': 'Есть'}],
+                        [{'text': 'Нету'}]
+                    ],
+                    'resize_keyboard': True,
+                    'one_time_keyboard': True
+                }
+            )
+        else:
+            send_message(chat_id, "❌ Неверный формат. Укажите цифру. Например: 5000")
+    
+    elif step == 'carrier_hydroboard':
+        data['hydroboard'] = 'Есть' if 'есть' in text.lower() else 'Нету'
         state['step'] = 'carrier_loading_date'
-        send_message(chat_id, "📅 <b>Укажите желаемую дату погрузки</b>\n\nФормат: ДД.ММ.ГГГГ\nНапример: 25.12.2025", {'remove_keyboard': True})
+        
+        today = datetime.now()
+        tomorrow = today + timedelta(days=1)
+        
+        send_message(
+            chat_id,
+            "📅 <b>Укажите желаемую дату погрузки</b>\n\nВыберите из вариантов или введите дату вручную\nФормат: ДД.ММ.ГГГГ",
+            {
+                'keyboard': [
+                    [{'text': f'🔴 Сегодня ({today.strftime("%d.%m.%Y")})'}],
+                    [{'text': f'🟢 Завтра ({tomorrow.strftime("%d.%m.%Y")})'}]
+                ],
+                'resize_keyboard': True,
+                'one_time_keyboard': True
+            }
+        )
     
     elif step == 'carrier_loading_date':
         try:
-            loading_date = datetime.strptime(text, '%d.%m.%Y')
+            if 'сегодня' in text.lower() or '🔴' in text:
+                loading_date = datetime.now()
+            elif 'завтра' in text.lower() or '🟢' in text:
+                loading_date = datetime.now() + timedelta(days=1)
+            else:
+                text_cleaned = text.replace('🔴', '').replace('🟢', '').strip()
+                text_cleaned = text_cleaned.split('(')[-1].replace(')', '').strip() if '(' in text_cleaned else text_cleaned
+                loading_date = datetime.strptime(text_cleaned, '%d.%m.%Y')
+            
             data['loading_date'] = loading_date.strftime('%Y-%m-%d')
             state['step'] = 'carrier_arrival_date'
-            send_message(chat_id, "📅 <b>Укажите дату прибытия на склад</b>\n\nФормат: ДД.ММ.ГГГГ\nНапример: 26.12.2025")
+            
+            today = datetime.now()
+            tomorrow = today + timedelta(days=1)
+            
+            send_message(
+                chat_id,
+                "📅 <b>Укажите дату прибытия на склад</b>\n\nВыберите из вариантов или введите дату вручную\nФормат: ДД.ММ.ГГГГ",
+                {
+                    'keyboard': [
+                        [{'text': f'🔴 Сегодня ({today.strftime("%d.%m.%Y")})'}],
+                        [{'text': f'🟢 Завтра ({tomorrow.strftime("%d.%m.%Y")})'}]
+                    ],
+                    'resize_keyboard': True,
+                    'one_time_keyboard': True
+                }
+            )
         except ValueError:
             send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
     
     elif step == 'carrier_arrival_date':
         try:
-            arrival_date = datetime.strptime(text, '%d.%m.%Y')
+            if 'сегодня' in text.lower() or '🔴' in text:
+                arrival_date = datetime.now()
+            elif 'завтра' in text.lower() or '🟢' in text:
+                arrival_date = datetime.now() + timedelta(days=1)
+            else:
+                text_cleaned = text.replace('🔴', '').replace('🟢', '').strip()
+                text_cleaned = text_cleaned.split('(')[-1].replace(')', '').strip() if '(' in text_cleaned else text_cleaned
+                arrival_date = datetime.strptime(text_cleaned, '%d.%m.%Y')
+            
             data['arrival_date'] = arrival_date.strftime('%Y-%m-%d')
             
             user_states[chat_id]['step'] = 'show_preview'
@@ -859,8 +969,8 @@ def process_message(chat_id: int, text: str):
 
 
 def generate_and_send_label(chat_id: int, data: Dict[str, Any]):
-    send_message(chat_id, "⏳ Генерирую термонаклейку на русском языке...")
-    send_message(chat_id, "📋 Термонаклейка будет отправлена после создания заявки")
+    send_message(chat_id, "⏳ Генерирую термоэтикетку на русском языке...")
+    send_message(chat_id, "📋 Термоэтикетка будет отправлена после создания заявки")
 
 
 def send_label_to_user(chat_id: int, order_id: int, order_type: str, label_size: str):
@@ -884,14 +994,14 @@ def send_label_to_user(chat_id: int, order_id: int, order_type: str, label_size:
             
             if pdf_base64:
                 pdf_bytes = base64.b64decode(pdf_base64)
-                send_document(chat_id, pdf_bytes, filename, f"📄 Термонаклейка для заявки #{order_id}")
+                send_document(chat_id, pdf_bytes, filename, f"📄 Термоэтикетка для заявки #{order_id}")
             else:
                 send_message(chat_id, "❌ Ошибка: не удалось получить PDF")
         else:
-            send_message(chat_id, f"❌ Ошибка генерации термонаклейки (код {response.status_code})")
+            send_message(chat_id, f"❌ Ошибка генерации термоэтикетки (код {response.status_code})")
     
     except Exception as e:
-        send_message(chat_id, f"❌ Ошибка отправки термонаклейки: {str(e)}")
+        send_message(chat_id, f"❌ Ошибка отправки термоэтикетки: {str(e)}")
 
 
 def show_preview(chat_id: int, data: Dict[str, Any]):
@@ -907,7 +1017,7 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
             f"📦 Коробки: {data.get('box_quantity', 0)}\n"
             f"👤 Отправитель: {data.get('sender_name', '-')}\n"
             f"📱 Телефон: {data.get('phone', '-')}\n"
-            f"🏷️ Термонаклейка: {data.get('label_size', '-')}"
+            f"🏷️ Термоэтикетка: {data.get('label_size', '-')}"
         )
         
         keyboard = {
@@ -949,6 +1059,8 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
             f"🔢 Гос. номер: {data.get('license_plate', '-')}\n"
             f"📦 Вместимость паллет: {data.get('pallet_capacity', 0)}\n"
             f"📦 Вместимость коробок: {data.get('box_capacity', 0)}\n"
+            f"💵 Ставка: {data.get('rate', '-')} руб.\n"
+            f"🚚 Гидроборт: {data.get('hydroboard', '-')}\n"
             f"👤 Водитель: {data.get('driver_name', '-')}\n"
             f"📱 Телефон: {data.get('phone', '-')}\n"
             f"📅 Дата погрузки: {data.get('loading_date', '-')}\n"
@@ -971,6 +1083,10 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
                 ],
                 [
                     {'text': '✏️ Коробки', 'callback_data': 'edit_box_capacity'},
+                    {'text': '✏️ Ставка', 'callback_data': 'edit_rate'}
+                ],
+                [
+                    {'text': '✏️ Гидроборт', 'callback_data': 'edit_hydroboard'},
                     {'text': '✏️ Водитель', 'callback_data': 'edit_driver_name'}
                 ],
                 [
@@ -1071,8 +1187,8 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
             cur.execute(
                 """
                 INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
-                (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, marketplace, loading_date, arrival_date, chat_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, marketplace, loading_date, arrival_date, rate, hydroboard, chat_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -1087,6 +1203,8 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                     data.get('marketplace'),
                     data.get('loading_date'),
                     data.get('arrival_date'),
+                    data.get('rate'),
+                    data.get('hydroboard'),
                     chat_id
                 )
             )
