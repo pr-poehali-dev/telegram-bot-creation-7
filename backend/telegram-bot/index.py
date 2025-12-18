@@ -293,16 +293,19 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     
     try:
         source_ip = event.get('requestContext', {}).get('identity', {}).get('sourceIp', '')
+        print(f"Request from IP: {source_ip}")
         
-        if not is_telegram_request(source_ip):
-            return {
-                'statusCode': 403,
-                'headers': {'Content-Type': 'application/json'},
-                'body': json.dumps({'error': 'Forbidden'}),
-                'isBase64Encoded': False
-            }
+        # Временно отключено для отладки
+        # if not is_telegram_request(source_ip):
+        #     return {
+        #         'statusCode': 403,
+        #         'headers': {'Content-Type': 'application/json'},
+        #         'body': json.dumps({'error': 'Forbidden'}),
+        #         'isBase64Encoded': False
+        #     }
         
         body_data = json.loads(event.get('body', '{}'))
+        print(f"Body data: {json.dumps(body_data)[:500]}")
         
         if 'callback_query' in body_data:
             callback = body_data['callback_query']
