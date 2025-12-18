@@ -485,6 +485,7 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
             'loading_address': 'адрес погрузки',
             'loading_date': 'дату погрузки (ДД.ММ.ГГГГ)',
             'loading_time': 'время погрузки',
+            'delivery_date': 'дату поставки на склад (ДД.ММ.ГГГГ)',
             'pallet_quantity': 'количество паллет',
             'box_quantity': 'количество коробок',
             'sender_name': 'ФИО отправителя',
@@ -513,7 +514,7 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
                     'one_time_keyboard': True
                 }
             )
-        elif field in ['loading_date', 'arrival_date']:
+        elif field in ['loading_date', 'arrival_date', 'delivery_date']:
             today = datetime.now()
             tomorrow = today + timedelta(days=1)
             send_message(
@@ -586,17 +587,11 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         show_my_orders(chat_id)
     
     elif callback_data == 'cancel_create':
-        user_states[chat_id] = {'step': 'choose_service', 'data': {}}
+        if chat_id in user_states:
+            del user_states[chat_id]
         send_message(
             chat_id,
-            "❌ Создание заявки отменено\n\n<b>Выберите услугу:</b>",
-            {
-                'keyboard': [
-                    [{'text': '📦 Отправитель'}],
-                    [{'text': '🚚 Перевозчик'}]
-                ],
-                'resize_keyboard': True
-            }
+            "❌ Заявка отменена. Введите /start для начала работы"
         )
 
 
@@ -721,7 +716,7 @@ def process_message(chat_id: int, text: str):
         
         if field in ['pallet_quantity', 'box_quantity', 'pallet_capacity', 'box_capacity', 'rate']:
             data[field] = int(text) if text.isdigit() else 0
-        elif field in ['loading_date', 'arrival_date']:
+        elif field in ['loading_date', 'arrival_date', 'delivery_date']:
             try:
                 if 'сегодня' in text.lower() or '🔴' in text:
                     date_obj = datetime.now()
@@ -798,11 +793,35 @@ def process_message(chat_id: int, text: str):
     elif step == 'sender_loading_address':
         data['loading_address'] = text
         state['step'] = 'sender_loading_date'
-        send_message(chat_id, "📅 <b>Укажите дату погрузки</b>\n\nФормат: ДД.ММ.ГГГГ\nНапример: 25.12.2025")
+        
+        today = datetime.now()
+        tomorrow = today + timedelta(days=1)
+        send_message(
+            chat_id,
+            "📅 <b>Укажите дату погрузки</b>",
+            {
+                'keyboard': [
+                    [{'text': f"🔴 Сегодня ({today.strftime('%d.%m.%Y')})"}],
+                    [{'text': f"🟢 Завтра ({tomorrow.strftime('%d.%m.%Y')})"}],
+                    [{'text': 'Ввести дату'}]
+                ],
+                'resize_keyboard': True,
+                'one_time_keyboard': True
+            }
+        )
     
     elif step == 'sender_loading_date':
         try:
-            loading_date = datetime.strptime(text, '%d.%m.%Y')
+            if 'сегодня' in text.lower() or '🔴' in text:
+                loading_date = datetime.now()
+            elif 'завтра' in text.lower() or '🟢' in text:
+                loading_date = datetime.now() + timedelta(days=1)
+            elif 'ввести' in text.lower():
+                send_message(chat_id, "📅 <b>Введите дату погрузки</b>\n\nФормат: ДД.ММ.ГГГГ\nНапример: 25.12.2025", {'remove_keyboard': True})
+                return
+            else:
+                loading_date = datetime.strptime(text, '%d.%m.%Y')
+            
             data['loading_date'] = loading_date.strftime('%Y-%m-%d')
             
             days_until = (loading_date - datetime.now()).days
@@ -815,14 +834,52 @@ def process_message(chat_id: int, text: str):
                 )
             
             state['step'] = 'sender_loading_time'
-            send_message(chat_id, "🕐 <b>Укажите время погрузки</b>\n\nФормат: ЧЧ:ММ\nНапример: 14:30")
+            send_message(chat_id, "🕐 <b>Укажите время погрузки</b>\n\nФормат: ЧЧ:ММ\nНапример: 14:30", {'remove_keyboard': True})
         except ValueError:
             send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
     
     elif step == 'sender_loading_time':
         data['loading_time'] = text
-        state['step'] = 'sender_pallet_quantity'
-        send_message(chat_id, "📦 <b>Укажите количество паллет</b>\n\nНапример: 5\nИли 0, если нет паллет")
+        state['step'] = 'sender_delivery_date'
+        
+        today = datetime.now()
+        tomorrow = today + timedelta(days=1)
+        send_message(
+            chat_id,
+            "📅 <b>Укажите дату поставки на склад</b>",
+            {
+                'keyboard': [
+                    [{'text': f"🔴 Сегодня ({today.strftime('%d.%m.%Y')})"}],
+                    [{'text': f"🟢 Завтра ({tomorrow.strftime('%d.%m.%Y')})"}],
+                    [{'text': 'Ввести дату'}]
+                ],
+                'resize_keyboard': True,
+                'one_time_keyboard': True
+            }
+        )
+    
+    elif step == 'sender_pallet_quantity':
+        data['pallet_quantity'] = int(text) if text.isdigit() else 0
+        state['step'] = 'sender_box_quantity'
+        send_message(chat_id, "📦 <b>Укажите количество коробок</b>\n\nНапример: 10\nИли 0, если нет коробок")
+    
+    elif step == 'sender_delivery_date':
+        try:
+            if 'сегодня' in text.lower() or '🔴' in text:
+                delivery_date = datetime.now()
+            elif 'завтра' in text.lower() or '🟢' in text:
+                delivery_date = datetime.now() + timedelta(days=1)
+            elif 'ввести' in text.lower():
+                send_message(chat_id, "📅 <b>Введите дату поставки на склад</b>\n\nФормат: ДД.ММ.ГГГГ\nНапример: 25.12.2025", {'remove_keyboard': True})
+                return
+            else:
+                delivery_date = datetime.strptime(text, '%d.%m.%Y')
+            
+            data['delivery_date'] = delivery_date.strftime('%Y-%m-%d')
+            state['step'] = 'sender_pallet_quantity'
+            send_message(chat_id, "📦 <b>Укажите количество паллет</b>\n\nНапример: 5\nИли 0, если нет паллет", {'remove_keyboard': True})
+        except ValueError:
+            send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
     
     elif step == 'sender_pallet_quantity':
         data['pallet_quantity'] = int(text) if text.isdigit() else 0
@@ -1053,6 +1110,7 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
             f"🏠 Адрес погрузки: {data.get('loading_address', '-')}\n"
             f"📅 Дата погрузки: {data.get('loading_date', '-')}\n"
             f"🕐 Время погрузки: {data.get('loading_time', '-')}\n"
+            f"📅 Дата поставки: {data.get('delivery_date', '-')}\n"
             f"📦 Паллеты: {data.get('pallet_quantity', 0)}\n"
             f"📦 Коробки: {data.get('box_quantity', 0)}\n"
             f"👤 Отправитель: {data.get('sender_name', '-')}\n"
@@ -1069,18 +1127,21 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
                 ],
                 [
                     {'text': '✏️ Адрес', 'callback_data': 'edit_loading_address'},
-                    {'text': '✏️ Дата', 'callback_data': 'edit_loading_date'}
+                    {'text': '✏️ Дата погрузки', 'callback_data': 'edit_loading_date'}
                 ],
                 [
                     {'text': '✏️ Время', 'callback_data': 'edit_loading_time'},
-                    {'text': '✏️ Паллеты', 'callback_data': 'edit_pallet_quantity'}
+                    {'text': '✏️ Дата поставки', 'callback_data': 'edit_delivery_date'}
                 ],
                 [
-                    {'text': '✏️ Коробки', 'callback_data': 'edit_box_quantity'},
-                    {'text': '✏️ ФИО', 'callback_data': 'edit_sender_name'}
+                    {'text': '✏️ Паллеты', 'callback_data': 'edit_pallet_quantity'},
+                    {'text': '✏️ Коробки', 'callback_data': 'edit_box_quantity'}
                 ],
                 [
-                    {'text': '✏️ Телефон', 'callback_data': 'edit_phone'},
+                    {'text': '✏️ ФИО', 'callback_data': 'edit_sender_name'},
+                    {'text': '✏️ Телефон', 'callback_data': 'edit_phone'}
+                ],
+                [
                     {'text': '✏️ Ставка', 'callback_data': 'edit_rate'}
                 ],
                 [
@@ -1167,8 +1228,8 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
             cur.execute(
                 """
                 INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
-                (loading_address, warehouse, loading_date, loading_time, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace, chat_id, rate, warehouse_normalized)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (loading_address, warehouse, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace, chat_id, rate, warehouse_normalized)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -1176,6 +1237,7 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                     data.get('warehouse'),
                     data.get('loading_date'),
                     data.get('loading_time'),
+                    data.get('delivery_date'),
                     data.get('pallet_quantity', 0),
                     data.get('box_quantity', 0),
                     data.get('sender_name'),
