@@ -44,6 +44,41 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             'isBase64Encoded': False
         }
     
+    if action == 'delete':
+        try:
+            response = requests.post(
+                f'https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook',
+                json={'drop_pending_updates': True}
+            )
+            result = response.json()
+            
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'success': True,
+                    'message': 'Webhook удален и pending updates очищены',
+                    'result': result
+                }),
+                'isBase64Encoded': False
+            }
+        except Exception as e:
+            return {
+                'statusCode': 500,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'success': False,
+                    'error': str(e)
+                }),
+                'isBase64Encoded': False
+            }
+    
     if action == 'info':
         try:
             response = requests.get(
@@ -77,7 +112,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     try:
         response = requests.post(
             f'https://api.telegram.org/bot{BOT_TOKEN}/setWebhook',
-            json={'url': WEBHOOK_URL}
+            json={
+                'url': WEBHOOK_URL,
+                'drop_pending_updates': True
+            }
         )
         
         result = response.json()
