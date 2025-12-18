@@ -18,7 +18,7 @@ import ipaddress
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 ADMIN_CHAT_ID = os.environ.get('TELEGRAM_ADMIN_CHAT_ID', '')
-PDF_FUNCTION_URL = 'https://functions.poehali.dev/bcfbb8a2-a68a-42ce-bfb2-f6bd9e33bbb5'
+PDF_FUNCTION_URL = 'https://functions.poehali.dev/a68807d2-57ae-4e99-b9e2-44b1dcfcc5b6'
 
 MARKETPLACES = [
     'Wildberries',
@@ -1061,31 +1061,10 @@ def process_message(chat_id: int, text: str):
                 arrival_date = datetime.strptime(text_cleaned, '%d.%m.%Y')
             
             data['arrival_date'] = arrival_date.strftime('%Y-%m-%d')
-            state['step'] = 'carrier_label_size'
-            send_message(
-                chat_id,
-                "🏷️ <b>Выберите термоэтикетку с инфо для отправителя</b>",
-                {
-                    'keyboard': [
-                        [{'text': '120x75 мм'}],
-                        [{'text': '58x40 мм'}]
-                    ],
-                    'resize_keyboard': True,
-                    'one_time_keyboard': True
-                }
-            )
+            state['step'] = 'show_preview'
+            show_preview(chat_id, data)
         except ValueError:
             send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
-    
-    elif step == 'carrier_label_size':
-        if '120' in text:
-            data['label_size'] = '120x75'
-        else:
-            data['label_size'] = '58x40'
-        
-        send_message(chat_id, "📋 Термоэтикетка будет отправлена после создания заявки")
-        state['step'] = 'show_preview'
-        show_preview(chat_id, data)
 
 
 def generate_and_send_label(chat_id: int, data: Dict[str, Any]):
@@ -1189,8 +1168,7 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
             f"👤 Водитель: {data.get('driver_name', '-')}\n"
             f"📱 Телефон: {data.get('phone', '-')}\n"
             f"📅 Дата ПОГРУЗКИ: {data.get('loading_date', '-')}\n"
-            f"📅 Дата прибытия: {data.get('arrival_date', '-')}\n"
-            f"🏷️ Термоэтикетка: {data.get('label_size', '-')}"
+            f"📅 Дата прибытия: {data.get('arrival_date', '-')}"
         )
         
         keyboard = {
@@ -1303,6 +1281,9 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                 )
                 
                 send_label_to_user(chat_id, order_id, 'sender', data.get('label_size', '120x75'))
+                notify_about_new_order(order_id, 'sender', data)
+                send_notifications_to_subscribers(order_id, 'sender', data)
+                find_matching_orders_by_date(order_id, 'sender', data)
         
         finally:
             conn.close()
@@ -1364,7 +1345,9 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                 {'remove_keyboard': True}
             )
             
-            send_label_to_user(chat_id, order_id, 'carrier', data.get('label_size', '120x75'))
+            notify_about_new_order(order_id, 'carrier', data)
+            send_notifications_to_subscribers(order_id, 'carrier', data)
+            find_matching_orders_by_date(order_id, 'carrier', data)
     
     finally:
         conn.close()
@@ -1673,36 +1656,62 @@ def delete_user_order(chat_id: int, order_id: int):
 
 
 def notify_about_new_order(order_id: int, order_type: str, data: Dict[str, Any]):
-    if not ADMIN_CHAT_ID:
-        return
+    """Отправляет уведомления о новой заявке всем активным админам"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
     
-    if order_type == 'sender':
-        message = (
-            f"🆕 <b>Новая заявка отправителя #{order_id}</b>\n\n"
-            f"🏪 Маркетплейс: {data.get('marketplace', '-')}\n"
-            f"📍 Склад: {data.get('warehouse')}\n"
-            f"🏠 Адрес: {data.get('loading_address')}\n"
-            f"📅 Дата: {data.get('loading_date')} {data.get('loading_time')}\n"
-            f"📦 Паллеты: {data.get('pallet_quantity', 0)}\n"
-            f"📦 Коробки: {data.get('box_quantity', 0)}\n"
-            f"👤 Отправитель: {data.get('sender_name')}\n"
-            f"📱 Телефон: {data.get('phone')}"
-        )
-    else:
-        message = (
-            f"🆕 <b>Новая заявка перевозчика #{order_id}</b>\n\n"
-            f"🏪 Маркетплейс: {data.get('marketplace', '-')}\n"
-            f"📍 Склад: {data.get('warehouse')}\n"
-            f"🚗 Авто: {data.get('car_brand')} {data.get('car_model')}\n"
-            f"🔢 Номер: {data.get('license_plate')}\n"
-            f"📦 Вместимость: {data.get('pallet_capacity', 0)} паллет, {data.get('box_capacity', 0)} коробок\n"
-            f"👤 Водитель: {data.get('driver_name')}\n"
-            f"📱 Телефон: {data.get('phone')}\n"
-            f"📅 Погрузка: {data.get('loading_date', '-')}\n"
-            f"📅 Прибытие: {data.get('arrival_date', '-')}"
-        )
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Получаем всех активных админов с включенными уведомлениями
+            cur.execute("""
+                SELECT ba.chat_id 
+                FROM t_p52349012_telegram_bot_creatio.bot_admins ba
+                LEFT JOIN t_p52349012_telegram_bot_creatio.notification_settings ns 
+                ON ba.chat_id = ns.chat_id
+                WHERE ba.is_active = true 
+                AND (ns.notify_new_orders = true OR ns.notify_new_orders IS NULL)
+            """)
+            
+            admins = cur.fetchall()
+            
+            if not admins and ADMIN_CHAT_ID:
+                # Фоллбек на старый способ через переменную окружения
+                admins = [{'chat_id': int(ADMIN_CHAT_ID)}]
+            
+            if order_type == 'sender':
+                message = (
+                    f"🆕 <b>Новая заявка отправителя #{order_id}</b>\n\n"
+                    f"🏪 Маркетплейс: {data.get('marketplace', '-')}\n"
+                    f"📍 Склад: {data.get('warehouse')}\n"
+                    f"🏠 Адрес: {data.get('loading_address')}\n"
+                    f"📅 Дата: {data.get('loading_date')} {data.get('loading_time')}\n"
+                    f"📦 Паллеты: {data.get('pallet_quantity', 0)}\n"
+                    f"📦 Коробки: {data.get('box_quantity', 0)}\n"
+                    f"👤 Отправитель: {data.get('sender_name')}\n"
+                    f"📱 Телефон: {data.get('phone')}"
+                )
+            else:
+                message = (
+                    f"🆕 <b>Новая заявка перевозчика #{order_id}</b>\n\n"
+                    f"🏪 Маркетплейс: {data.get('marketplace', '-')}\n"
+                    f"📍 Склад: {data.get('warehouse')}\n"
+                    f"🚗 Авто: {data.get('car_brand')} {data.get('car_model')}\n"
+                    f"🔢 Номер: {data.get('license_plate')}\n"
+                    f"📦 Вместимость: {data.get('pallet_capacity', 0)} паллет, {data.get('box_capacity', 0)} коробок\n"
+                    f"👤 Водитель: {data.get('driver_name')}\n"
+                    f"📱 Телефон: {data.get('phone')}\n"
+                    f"📅 Погрузка: {data.get('loading_date', '-')}\n"
+                    f"📅 Прибытие: {data.get('arrival_date', '-')}"
+                )
+            
+            # Отправляем всем админам
+            for admin in admins:
+                try:
+                    send_message(admin['chat_id'], message)
+                except Exception as e:
+                    print(f"[ERROR] Failed to notify admin {admin['chat_id']}: {str(e)}")
     
-    send_message(int(ADMIN_CHAT_ID), message)
+    finally:
+        conn.close()
 
 
 def ask_notification_settings(chat_id: int, user_type: str, data: Dict[str, Any]):

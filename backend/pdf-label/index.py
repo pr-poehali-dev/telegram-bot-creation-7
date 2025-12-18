@@ -116,21 +116,70 @@ def download_font():
     return font_path
 
 
+def format_order_text(order: Dict[str, Any], order_type: str) -> str:
+    """Форматирует заявку в читаемый текст"""
+    if order_type == 'sender':
+        lines = []
+        lines.append(f"ЗАЯВКА ОТПРАВИТЕЛЯ #{order['id']}")
+        if order.get('marketplace'): lines.append(f"Маркетплейс: {order['marketplace']}")
+        if order.get('warehouse'): lines.append(f"Склад: {order['warehouse']}")
+        if order.get('loading_address'): lines.append(f"Откуда: {order['loading_address']}")
+        
+        cargo = []
+        if order.get('pallet_quantity'): cargo.append(f"{order['pallet_quantity']} паллет")
+        if order.get('box_quantity'): cargo.append(f"{order['box_quantity']} коробок")
+        if cargo: lines.append(f"Груз: {', '.join(cargo)}")
+        
+        if order.get('sender_name'): lines.append(f"Контакт: {order['sender_name']}")
+        if order.get('phone'): lines.append(f"Телефон: {order['phone']}")
+        if order.get('loading_date'): lines.append(f"Дата ПОГРУЗКИ: {order['loading_date']}")
+        if order.get('rate'): lines.append(f"Ставка: {order['rate']} руб")
+        
+        return '\n'.join(lines)
+    else:
+        lines = []
+        lines.append(f"ЗАЯВКА ПЕРЕВОЗЧИКА #{order['id']}")
+        if order.get('marketplace'): lines.append(f"Маркетплейс: {order['marketplace']}")
+        if order.get('warehouse'): lines.append(f"Склад: {order['warehouse']}")
+        
+        car = []
+        if order.get('car_brand'): car.append(order['car_brand'])
+        if order.get('car_model'): car.append(order['car_model'])
+        if car: lines.append(f"Автомобиль: {' '.join(car)}")
+        
+        if order.get('license_plate'): lines.append(f"Номер: {order['license_plate']}")
+        
+        capacity = []
+        if order.get('pallet_capacity'): capacity.append(f"{order['pallet_capacity']} паллет")
+        if order.get('box_capacity'): capacity.append(f"{order['box_capacity']} коробок")
+        if capacity: lines.append(f"Вместимость: {', '.join(capacity)}")
+        
+        if order.get('hydroboard'): lines.append(f"Гидроборт: {order['hydroboard']}")
+        if order.get('driver_name'): lines.append(f"Водитель: {order['driver_name']}")
+        if order.get('phone'): lines.append(f"Телефон: {order['phone']}")
+        if order.get('loading_date'): lines.append(f"Дата ПОГРУЗКИ: {order['loading_date']}")
+        if order.get('arrival_date'): lines.append(f"Дата прибытия: {order['arrival_date']}")
+        
+        return '\n'.join(lines)
+
+
 def generate_label_pdf(order: Dict[str, Any], order_type: str, label_size: str) -> bytes:
     buffer = io.BytesIO()
     
     if label_size == '120x75':
         width, height = 120*MM, 75*MM
-        font_size_title = 12
-        font_size_normal = 9
-        font_size_small = 7
-        qr_size = 15*MM
+        font_size_title = 11
+        font_size_normal = 8
+        font_size_small = 6
+        qr_size = 18*MM
+        line_height = 4*MM
     else:
         width, height = 58*MM, 40*MM
-        font_size_title = 9
+        font_size_title = 8
         font_size_normal = 6
         font_size_small = 5
-        qr_size = 10*MM
+        qr_size = 12*MM
+        line_height = 3*MM
     
     c = canvas.Canvas(buffer, pagesize=(width, height))
     
@@ -141,100 +190,52 @@ def generate_label_pdf(order: Dict[str, Any], order_type: str, label_size: str) 
     except:
         c.setFont("Helvetica-Bold", font_size_title)
     
-    y_position = height - 8*MM
+    y_position = height - 7*MM
     x_margin = 3*MM
     
+    # Заголовок "CARGO EXPRESS" + QR-код рядом
     c.drawString(x_margin, y_position, "CARGO EXPRESS")
     
     try:
-        qr_url = f"https://t.me/{BOT_USERNAME}?start=order_{order['id']}"
+        qr_url = f"https://t.me/{BOT_USERNAME}"
         qr_code = QrCodeWidget(qr_url)
         bounds = qr_code.getBounds()
         qr_width = bounds[2] - bounds[0]
         qr_height = bounds[3] - bounds[1]
         qr_drawing = Drawing(qr_size, qr_size, transform=[qr_size/qr_width, 0, 0, qr_size/qr_height, 0, 0])
         qr_drawing.add(qr_code)
-        renderPDF.draw(qr_drawing, c, width - qr_size - 3*MM, height - qr_size - 8*MM)
+        renderPDF.draw(qr_drawing, c, width - qr_size - x_margin, y_position - qr_size + 3*MM)
     except:
         pass
     
-    y_position -= 7*MM
+    y_position -= qr_size + 2*MM
     
+    # Рисуем линию-разделитель
+    c.setStrokeColor(colors.black)
+    c.setLineWidth(0.5)
+    c.line(x_margin, y_position, width - x_margin, y_position)
+    
+    y_position -= 5*MM
+    
+    # Выводим текст заявки
     try:
         c.setFont("DejaVu", font_size_normal)
     except:
         c.setFont("Helvetica", font_size_normal)
     
-    if order_type == 'sender':
-        c.drawString(x_margin, y_position, f"ЗАЯВКА ОТПРАВИТЕЛЯ #{order['id']}")
-        y_position -= 5*MM
-        
-        if order.get('marketplace'):
-            c.drawString(x_margin, y_position, f"Маркетплейс: {order['marketplace']}")
-            y_position -= 4*MM
-        
-        if order.get('warehouse'):
-            c.drawString(x_margin, y_position, f"Склад: {order['warehouse']}")
-            y_position -= 4*MM
-        
-        if order.get('loading_address'):
-            try:
-                c.setFont("DejaVu", font_size_small)
-            except:
-                c.setFont("Helvetica", font_size_small)
-            addr = str(order['loading_address'])[:45]
-            c.drawString(x_margin, y_position, f"Откуда: {addr}")
-            y_position -= 4*MM
-        
-        try:
-            c.setFont("DejaVu", font_size_normal)
-        except:
-            c.setFont("Helvetica", font_size_normal)
-        
-        pallet_qty = order.get('pallet_quantity', 0)
-        box_qty = order.get('box_quantity', 0)
-        if pallet_qty or box_qty:
-            cargo_parts = []
-            if pallet_qty: cargo_parts.append(f"{pallet_qty} паллет")
-            if box_qty: cargo_parts.append(f"{box_qty} коробок")
-            c.drawString(x_margin, y_position, "Груз: " + ", ".join(cargo_parts))
-            y_position -= 4*MM
-        
-        if order.get('sender_name'):
-            c.drawString(x_margin, y_position, f"Контакт: {order['sender_name']}")
-            y_position -= 4*MM
-        
-        if order.get('phone'):
-            c.drawString(x_margin, y_position, f"Телефон: {order['phone']}")
+    order_text = format_order_text(order, order_type)
     
-    else:
-        c.drawString(x_margin, y_position, f"ЗАЯВКА ПЕРЕВОЗЧИКА #{order['id']}")
-        y_position -= 5*MM
+    for line in order_text.split('\n'):
+        if y_position < 5*MM:
+            break
         
-        if order.get('car_brand') or order.get('car_model'):
-            car_info = f"{order.get('car_brand', '')} {order.get('car_model', '')}".strip()
-            c.drawString(x_margin, y_position, f"Автомобиль: {car_info}")
-            y_position -= 4*MM
+        # Обрезаем слишком длинные строки
+        max_chars = 50 if label_size == '120x75' else 28
+        if len(line) > max_chars:
+            line = line[:max_chars-3] + '...'
         
-        if order.get('license_plate'):
-            c.drawString(x_margin, y_position, f"Номер: {order['license_plate']}")
-            y_position -= 4*MM
-        
-        pallet_cap = order.get('pallet_capacity', 0)
-        box_cap = order.get('box_capacity', 0)
-        if pallet_cap or box_cap:
-            cap_parts = []
-            if pallet_cap: cap_parts.append(f"{pallet_cap} паллет")
-            if box_cap: cap_parts.append(f"{box_cap} коробок")
-            c.drawString(x_margin, y_position, "Вместимость: " + ", ".join(cap_parts))
-            y_position -= 4*MM
-        
-        if order.get('driver_name'):
-            c.drawString(x_margin, y_position, f"Водитель: {order['driver_name']}")
-            y_position -= 4*MM
-        
-        if order.get('phone'):
-            c.drawString(x_margin, y_position, f"Телефон: {order['phone']}")
+        c.drawString(x_margin, y_position, line)
+        y_position -= line_height
     
     try:
         c.setFont("DejaVu", font_size_small)
