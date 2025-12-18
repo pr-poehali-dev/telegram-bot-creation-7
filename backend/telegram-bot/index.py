@@ -1235,17 +1235,17 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 warehouse_norm = normalize_warehouse(data.get('warehouse', ''))
                 
-                # Определяем тип груза на основе количества
+                # Определяем тип груза на основе количества (макс 10 символов)
                 pallet_qty = data.get('pallet_quantity', 0)
                 box_qty = data.get('box_quantity', 0)
                 if pallet_qty > 0 and box_qty > 0:
-                    cargo_type = 'Паллеты и коробки'
+                    cargo_type = 'Смешанный'
                 elif pallet_qty > 0:
                     cargo_type = 'Паллеты'
                 elif box_qty > 0:
                     cargo_type = 'Коробки'
                 else:
-                    cargo_type = 'Не указано'
+                    cargo_type = 'Другое'
                 
                 print(f"[DEBUG] Executing INSERT query...")
                 cur.execute(
