@@ -536,11 +536,14 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
             )
     
     elif callback_data == 'confirm_create':
+        print(f"[DEBUG] confirm_create pressed by chat_id={chat_id}, type={data.get('type')}")
         if data.get('type') == 'sender':
+            print("[DEBUG] Calling save_sender_order...")
             save_sender_order(chat_id, data)
             if chat_id in user_states:
                 del user_states[chat_id]
         else:
+            print("[DEBUG] Calling save_carrier_order...")
             save_carrier_order(chat_id, data)
             if chat_id in user_states:
                 del user_states[chat_id]
@@ -1208,8 +1211,10 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
 
 
 def save_sender_order(chat_id: int, data: Dict[str, Any]):
+    print(f"[DEBUG] save_sender_order called for chat_id={chat_id}, data={data}")
     user_limit = get_user_daily_limit(chat_id)
     orders_today = get_user_orders_today(chat_id)
+    print(f"[DEBUG] user_limit={user_limit}, orders_today={orders_today}")
     
     if orders_today >= user_limit:
         log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
@@ -1220,6 +1225,7 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
         )
         return
     
+    print("[DEBUG] Connecting to database...")
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     
     try:
