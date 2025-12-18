@@ -14,6 +14,8 @@ WEBHOOK_URL = 'https://functions.poehali.dev/f0b965eb-584a-4631-8fb2-6189ea6726e
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     method: str = event.get('httpMethod', 'GET')
+    query_params = event.get('queryStringParameters', {})
+    action = query_params.get('action', 'setup')
     
     if method == 'OPTIONS':
         return {
@@ -41,6 +43,36 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             }),
             'isBase64Encoded': False
         }
+    
+    if action == 'info':
+        try:
+            response = requests.get(
+                f'https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo'
+            )
+            result = response.json()
+            
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps(result),
+                'isBase64Encoded': False
+            }
+        except Exception as e:
+            return {
+                'statusCode': 500,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'success': False,
+                    'error': str(e)
+                }),
+                'isBase64Encoded': False
+            }
     
     try:
         response = requests.post(

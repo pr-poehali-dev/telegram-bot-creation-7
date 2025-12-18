@@ -36,7 +36,7 @@ ADMIN_SESSION_TIMEOUT = 24 * 60 * 60
 MAX_REQUESTS_PER_MINUTE = 20
 MAX_TEXT_LENGTH = 500
 MAX_ORDERS_PER_DAY = 10
-TELEGRAM_IPS = ['149.154.160.0/20', '91.108.4.0/22']
+TELEGRAM_IPS = ['149.154.160.0/20', '91.108.4.0/22', '185.178.208.0/22']
 
 def normalize_warehouse(warehouse: str) -> str:
     """Нормализует название склада для fuzzy matching"""
