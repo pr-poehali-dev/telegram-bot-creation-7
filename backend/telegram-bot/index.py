@@ -638,52 +638,91 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         )
         return
     
-    if text.startswith('/make_admin '):
+    if text == '/add_admin':
+        if str(chat_id) != ADMIN_CHAT_ID:
+            send_message(chat_id, "❌ Только владелец бота может добавлять администраторов")
+            return
+        
+        user_states[chat_id] = {'step': 'add_admin_chat_id', 'data': {}, 'last_activity': time.time()}
+        send_message(
+            chat_id,
+            "👤 <b>Добавление нового администратора</b>\n\n"
+            "Отправьте Chat ID пользователя, которого хотите сделать администратором\n\n"
+            "💡 Пользователь может узнать свой Chat ID командой /my_id"
+        )
+        return
+    
+    if text == '/list_admins':
+        if str(chat_id) != ADMIN_CHAT_ID:
+            send_message(chat_id, "❌ Доступно только владельцу бота")
+            return
+        
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT chat_id, username, is_active, added_at FROM t_p52349012_telegram_bot_creatio.bot_admins ORDER BY added_at DESC"
+                )
+                admins = cur.fetchall()
+                
+                if not admins:
+                    send_message(chat_id, "📭 Список администраторов пуст")
+                    return
+                
+                message_parts = ["👥 <b>Список администраторов:</b>\n"]
+                for admin in admins:
+                    status = "✅" if admin['is_active'] else "❌"
+                    message_parts.append(
+                        f"\n{status} @{admin.get('username', 'нет username')}\n"
+                        f"   Chat ID: <code>{admin['chat_id']}</code>\n"
+                        f"   Добавлен: {admin['added_at'].strftime('%d.%m.%Y %H:%M') if admin['added_at'] else 'неизвестно'}"
+                    )
+                
+                send_message(chat_id, ''.join(message_parts))
+        finally:
+            conn.close()
+        return
+    
+    if text.startswith('/remove_admin '):
+        if str(chat_id) != ADMIN_CHAT_ID:
+            send_message(chat_id, "❌ Только владелец бота может удалять администраторов")
+            return
+        
         parts = text.split(' ', 1)
-        if len(parts) < 2:
-            send_message(chat_id, "❌ Неверный формат команды.\n\nИспользование: /make_admin ПАРОЛЬ")
+        if len(parts) < 2 or not parts[1].strip().isdigit():
+            send_message(chat_id, "❌ Неверный формат.\n\nИспользование: /remove_admin CHAT_ID")
             return
         
-        provided_password = parts[1].strip()
-        admin_password = os.environ.get('ADMIN_PASSWORD', '')
+        target_chat_id = int(parts[1].strip())
         
-        if not admin_password:
-            send_message(chat_id, "❌ Административный пароль не настроен в системе. Обратитесь к владельцу бота.")
-            return
-        
-        if provided_password != admin_password:
-            log_security_event(chat_id, 'failed_admin_auth', 'Неверный пароль для /make_admin', 'high')
-            send_message(chat_id, "❌ Неверный пароль")
+        if target_chat_id == int(ADMIN_CHAT_ID):
+            send_message(chat_id, "❌ Нельзя удалить владельца бота")
             return
         
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id FROM t_p52349012_telegram_bot_creatio.bot_admins WHERE chat_id = %s",
-                    (chat_id,)
+                    "UPDATE t_p52349012_telegram_bot_creatio.bot_admins SET is_active = false WHERE chat_id = %s",
+                    (target_chat_id,)
                 )
+                conn.commit()
                 
-                if cur.fetchone():
-                    send_message(chat_id, "ℹ️ Вы уже являетесь администратором!")
+                if cur.rowcount > 0:
+                    send_message(chat_id, f"✅ Администратор {target_chat_id} деактивирован")
+                    log_security_event(chat_id, 'admin_removed', f'Админ {target_chat_id} деактивирован', 'high')
                 else:
-                    cur.execute(
-                        "INSERT INTO t_p52349012_telegram_bot_creatio.bot_admins (chat_id, username, is_active) VALUES (%s, %s, true)",
-                        (chat_id, username)
-                    )
-                    conn.commit()
-                    
-                    send_message(
-                        chat_id,
-                        f"✅ <b>Поздравляем!</b>\n\n"
-                        f"Вы успешно добавлены в список администраторов.\n"
-                        f"Теперь вы будете получать уведомления о новых заявках.\n\n"
-                        f"Ваш Chat ID: <code>{chat_id}</code>"
-                    )
-                    
-                    log_security_event(chat_id, 'admin_added', f'Новый админ добавлен: {username}', 'high')
+                    send_message(chat_id, f"❌ Администратор с Chat ID {target_chat_id} не найден")
         finally:
             conn.close()
+        return
+    
+    if text == '/my_id':
+        send_message(
+            chat_id,
+            f"🆔 <b>Ваш Chat ID:</b> <code>{chat_id}</code>\n\n"
+            f"Скопируйте это значение и отправьте владельцу бота для получения прав администратора"
+        )
         return
     
     if text == '/start':
@@ -727,6 +766,52 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
     state['last_activity'] = time.time()
     step = state['step']
     data = state['data']
+    
+    if step == 'add_admin_chat_id':
+        if not text.isdigit():
+            send_message(chat_id, "❌ Неверный формат. Отправьте числовой Chat ID")
+            return
+        
+        target_chat_id = int(text)
+        target_username = f"user_{target_chat_id}"
+        
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM t_p52349012_telegram_bot_creatio.bot_admins WHERE chat_id = %s",
+                    (target_chat_id,)
+                )
+                
+                if cur.fetchone():
+                    send_message(chat_id, f"ℹ️ Пользователь {target_chat_id} уже является администратором")
+                else:
+                    cur.execute(
+                        "INSERT INTO t_p52349012_telegram_bot_creatio.bot_admins (chat_id, username, is_active) VALUES (%s, %s, true)",
+                        (target_chat_id, target_username)
+                    )
+                    conn.commit()
+                    
+                    send_message(
+                        chat_id,
+                        f"✅ <b>Администратор добавлен!</b>\n\n"
+                        f"Chat ID: <code>{target_chat_id}</code>\n"
+                        f"Пользователь будет получать уведомления о новых заявках."
+                    )
+                    
+                    send_message(
+                        target_chat_id,
+                        f"🎉 <b>Вы стали администратором бота!</b>\n\n"
+                        f"Теперь вы будете получать уведомления о всех новых заявках.\n"
+                        f"Используйте /start для доступа к функциям бота."
+                    )
+                    
+                    log_security_event(chat_id, 'admin_added', f'Новый админ добавлен: {target_chat_id}', 'high')
+        finally:
+            conn.close()
+        
+        del user_states[chat_id]
+        return
     
     if state.get('admin_action'):
         action = state['admin_action']
@@ -1292,34 +1377,34 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                     cargo_type = 'box'
                 
                 print(f"[DEBUG] Executing INSERT query...")
-                cur.execute(
-                    """
+                
+                # Экранируем строки для SQL
+                def escape_sql(value):
+                    if value is None:
+                        return 'NULL'
+                    if isinstance(value, (int, float)):
+                        return str(value)
+                    return "'" + str(value).replace("'", "''") + "'"
+                
+                query = f"""
                     INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
                     (loading_address, warehouse, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace, chat_id, rate, warehouse_normalized, cargo_type)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES ({escape_sql(data.get('loading_address'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('loading_time'))}, {escape_sql(data.get('delivery_date'))}, {data.get('pallet_quantity', 0)}, {data.get('box_quantity', 0)}, {escape_sql(data.get('sender_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('label_size'))}, {escape_sql(data.get('marketplace'))}, {chat_id}, {escape_sql(data.get('rate'))}, {escape_sql(warehouse_norm)}, {escape_sql(cargo_type)})
                     RETURNING id
-                    """,
-                    (
-                        data.get('loading_address'),
-                        data.get('warehouse'),
-                        data.get('loading_date'),
-                        data.get('loading_time'),
-                        data.get('delivery_date'),
-                        data.get('pallet_quantity', 0),
-                        data.get('box_quantity', 0),
-                        data.get('sender_name'),
-                        data.get('phone'),
-                        data.get('label_size'),
-                        data.get('marketplace'),
-                        chat_id,
-                        data.get('rate'),
-                        warehouse_norm,
-                        cargo_type
-                    )
-                )
+                """
+                
+                print(f"[DEBUG] Query: {query}")
+                cur.execute(query)
                 
                 print("[DEBUG] Fetching order_id...")
-                order_id = cur.fetchone()['id']
+                result = cur.fetchone()
+                print(f"[DEBUG] fetchone result: {result}, type: {type(result)}")
+                
+                if result is None:
+                    raise Exception("INSERT query returned no result")
+                
+                order_id = result['id'] if isinstance(result, dict) else result[0]
+                print(f"[DEBUG] Extracted order_id={order_id}")
                 conn.commit()
                 print(f"[DEBUG] Order created with id={order_id}")
                 
@@ -1360,32 +1445,29 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             warehouse_norm = normalize_warehouse(data.get('warehouse', ''))
-            cur.execute(
-                """
+            
+            # Экранируем строки для SQL
+            def escape_sql(value):
+                if value is None:
+                    return 'NULL'
+                if isinstance(value, (int, float)):
+                    return str(value)
+                return "'" + str(value).replace("'", "''") + "'"
+            
+            query = f"""
                 INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
                 (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, marketplace, loading_date, arrival_date, hydroboard, chat_id, warehouse_normalized)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES ({escape_sql(data.get('warehouse'))}, {escape_sql(data.get('car_brand'))}, {escape_sql(data.get('car_model'))}, {escape_sql(data.get('license_plate'))}, {data.get('pallet_capacity', 0)}, {data.get('box_capacity', 0)}, {escape_sql(data.get('driver_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('marketplace'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('arrival_date'))}, {escape_sql(data.get('hydroboard'))}, {chat_id}, {escape_sql(warehouse_norm)})
                 RETURNING id
-                """,
-                (
-                    data.get('warehouse'),
-                    data.get('car_brand'),
-                    data.get('car_model'),
-                    data.get('license_plate'),
-                    data.get('pallet_capacity', 0),
-                    data.get('box_capacity', 0),
-                    data.get('driver_name'),
-                    data.get('phone'),
-                    data.get('marketplace'),
-                    data.get('loading_date'),
-                    data.get('arrival_date'),
-                    data.get('hydroboard'),
-                    chat_id,
-                    warehouse_norm
-                )
-            )
+            """
             
-            order_id = cur.fetchone()['id']
+            cur.execute(query)
+            
+            result = cur.fetchone()
+            if result is None:
+                raise Exception("INSERT query returned no result")
+            
+            order_id = result['id'] if isinstance(result, dict) else result[0]
             conn.commit()
             
             send_message(
