@@ -419,6 +419,40 @@ def show_templates_management(chat_id: int):
     )
 
 
+def show_main_menu(chat_id: int):
+    """Показать главное меню выбора услуги"""
+    user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
+    
+    templates = get_user_templates(chat_id)
+    keyboard_buttons = [
+        [{'text': '📦 Отправитель'}],
+        [{'text': '🚚 Перевозчик'}],
+        [{'text': '📋 Мои заявки'}]
+    ]
+    
+    if templates:
+        keyboard_buttons.append([{'text': '💾 Мои шаблоны'}])
+        for template in templates[:5]:
+            template_name = template['template_name']
+            emoji = '📦' if template['order_type'] == 'sender' else '🚚'
+            keyboard_buttons.insert(0, [{'text': f"{emoji} {template_name}"}])
+    
+    send_message(
+        chat_id,
+        "👋 <b>Добро пожаловать!</b>\n\n"
+        "⚠️ <b>Важно:</b>\n"
+        "• Заявки отправителей удаляются через 5 дней после даты поставки\n"
+        "• Сохраняйте скрины переписок\n"
+        "• Сверяйте данные авто с заявкой\n\n"
+        "<b>Выберите услугу:</b>",
+        {
+            'keyboard': keyboard_buttons,
+            'resize_keyboard': True,
+            'one_time_keyboard': False
+        }
+    )
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     method: str = event.get('httpMethod', 'POST')
     
@@ -1257,13 +1291,8 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
                 {'remove_keyboard': True}
             )
         else:
-            if chat_id in user_states:
-                del user_states[chat_id]
-            send_message(
-                chat_id,
-                "✅ Готово! Введите /start для создания новой заявки",
-                {'remove_keyboard': True}
-            )
+            send_message(chat_id, "✅ Заявка создана!")
+            show_main_menu(chat_id)
         return
     
     if step == 'enter_template_name':
@@ -1280,13 +1309,11 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         order_type = data.get('type', 'sender')
         
         if save_template(chat_id, template_name, order_type, data):
-            if chat_id in user_states:
-                del user_states[chat_id]
             send_message(
                 chat_id,
-                f"✅ <b>Шаблон '{template_name}' сохранён!</b>\n\nТеперь вы увидите его в главном меню при вводе /start",
-                {'remove_keyboard': True}
+                f"✅ <b>Шаблон '{template_name}' сохранён!</b>\n\nТеперь вы увидите его в главном меню."
             )
+            show_main_menu(chat_id)
         else:
             send_message(
                 chat_id,
@@ -1416,6 +1443,11 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
     
     elif step == 'sender_loading_time':
+        import re
+        time_pattern = r'^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$'
+        if not re.match(time_pattern, text):
+            send_message(chat_id, "❌ Неверный формат времени. Используйте ЧЧ:ММ (например: 14:30)")
+            return
         data['loading_time'] = text
         state['step'] = 'sender_delivery_date'
         
