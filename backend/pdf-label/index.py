@@ -22,7 +22,23 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import requests as http_client
 
-BOT_USERNAME = os.environ.get('TELEGRAM_BOT_USERNAME', 'CargoExpressBot')
+def get_bot_username() -> str:
+    """Получает username бота через Telegram Bot API"""
+    try:
+        bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+        if not bot_token:
+            return 'YourBot'
+        
+        response = http_client.get(f'https://api.telegram.org/bot{bot_token}/getMe', timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('ok') and 'result' in data:
+                return data['result'].get('username', 'YourBot')
+        return 'YourBot'
+    except:
+        return 'YourBot'
+
+BOT_USERNAME = get_bot_username()
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     method: str = event.get('httpMethod', 'GET')

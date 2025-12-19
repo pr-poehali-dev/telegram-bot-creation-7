@@ -1823,8 +1823,8 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                 
                 query = f"""
                     INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
-                    (loading_address, warehouse, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, sender_name, phone, label_size, marketplace, chat_id, rate, warehouse_normalized, cargo_type)
-                    VALUES ({escape_sql(data.get('loading_address'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('loading_time'))}, {escape_sql(data.get('delivery_date'))}, {data.get('pallet_quantity', 0)}, {data.get('box_quantity', 0)}, {escape_sql(data.get('sender_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('label_size'))}, {escape_sql(data.get('marketplace'))}, {chat_id}, {escape_sql(data.get('rate'))}, {escape_sql(warehouse_norm)}, {escape_sql(cargo_type)})
+                    (loading_address, warehouse, cargo_type, sender_name, phone, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, label_size, marketplace, chat_id, rate, warehouse_normalized)
+                    VALUES ({escape_sql(data.get('loading_address'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(cargo_type)}, {escape_sql(data.get('sender_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('loading_time'))}, {escape_sql(data.get('delivery_date'))}, {data.get('pallet_quantity', 0)}, {data.get('box_quantity', 0)}, '58x40', {escape_sql(data.get('marketplace'))}, {chat_id}, {escape_sql(data.get('rate'))}, {escape_sql(warehouse_norm)})
                     RETURNING id
                 """
                 
@@ -1848,7 +1848,7 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                     f"✅ <b>Заявка #{order_id} создана!</b>\n\nВаш груз добавлен в систему."
                 )
                 
-                send_label_to_user(chat_id, order_id, 'sender', data.get('label_size', '120x75'))
+                send_label_to_user(chat_id, order_id, 'sender', '58x40')
                 notify_about_new_order(order_id, 'sender', data)
                 send_notifications_to_subscribers(order_id, 'sender', data)
                 find_matching_orders_by_date(order_id, 'sender', data)
@@ -1906,6 +1906,11 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 warehouse_norm = normalize_warehouse(data.get('warehouse', ''))
                 
+                # Определяем capacity_type на основе количества
+                pallet_cap = data.get('pallet_capacity', 0)
+                box_cap = data.get('box_capacity', 0)
+                capacity_type = 'pallet' if pallet_cap > 0 else 'box'
+                
                 # Экранируем строки для SQL
                 def escape_sql(value):
                     if value is None:
@@ -1918,8 +1923,8 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                 
                 query = f"""
                     INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
-                    (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, marketplace, loading_date, arrival_date, hydroboard, chat_id, warehouse_normalized)
-                    VALUES ({escape_sql(data.get('warehouse'))}, {escape_sql(data.get('car_brand'))}, {escape_sql(data.get('car_model'))}, {escape_sql(data.get('license_plate'))}, {data.get('pallet_capacity', 0)}, {data.get('box_capacity', 0)}, {escape_sql(data.get('driver_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('marketplace'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('arrival_date'))}, {escape_sql(data.get('hydroboard'))}, {chat_id}, {escape_sql(warehouse_norm)})
+                    (car_brand, license_plate, capacity_type, driver_name, phone, warehouse, car_model, pallet_capacity, box_capacity, marketplace, loading_date, arrival_date, hydroboard, chat_id, warehouse_normalized)
+                    VALUES ({escape_sql(data.get('car_brand'))}, {escape_sql(data.get('license_plate'))}, {escape_sql(capacity_type)}, {escape_sql(data.get('driver_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(data.get('car_model'))}, {pallet_cap}, {box_cap}, {escape_sql(data.get('marketplace'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('arrival_date'))}, {escape_sql(data.get('hydroboard'))}, {chat_id}, {escape_sql(warehouse_norm)})
                     RETURNING id
                 """
                 
@@ -2256,6 +2261,7 @@ def delete_user_order(chat_id: int, order_id: int):
                 )
                 conn.commit()
                 send_message(chat_id, f"✅ Заявка #{order_id} удалена")
+                show_my_orders(chat_id)
                 return
             
             cur.execute(
@@ -2270,6 +2276,7 @@ def delete_user_order(chat_id: int, order_id: int):
                 )
                 conn.commit()
                 send_message(chat_id, f"✅ Заявка #{order_id} удалена")
+                show_my_orders(chat_id)
                 return
             
             send_message(chat_id, f"❌ Заявка #{order_id} не найдена или вы не являетесь её владельцем")
