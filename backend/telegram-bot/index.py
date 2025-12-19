@@ -395,7 +395,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'isBase64Encoded': False
             }
         
-        process_message(chat_id, text)
+        username = message.get('from', {}).get('username', 'unknown')
+        process_message(chat_id, text, username)
         
         return {
             'statusCode': 200,
@@ -598,7 +599,7 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         )
 
 
-def process_message(chat_id: int, text: str):
+def process_message(chat_id: int, text: str, username: str = 'unknown'):
     if text.startswith('/unblock '):
         if str(chat_id) != ADMIN_CHAT_ID:
             send_message(chat_id, "❌ У вас нет прав администратора")
@@ -635,6 +636,54 @@ def process_message(chat_id: int, text: str):
                 ]
             }
         )
+        return
+    
+    if text.startswith('/make_admin '):
+        parts = text.split(' ', 1)
+        if len(parts) < 2:
+            send_message(chat_id, "❌ Неверный формат команды.\n\nИспользование: /make_admin ПАРОЛЬ")
+            return
+        
+        provided_password = parts[1].strip()
+        admin_password = os.environ.get('ADMIN_PASSWORD', '')
+        
+        if not admin_password:
+            send_message(chat_id, "❌ Административный пароль не настроен в системе. Обратитесь к владельцу бота.")
+            return
+        
+        if provided_password != admin_password:
+            log_security_event(chat_id, 'failed_admin_auth', 'Неверный пароль для /make_admin', 'high')
+            send_message(chat_id, "❌ Неверный пароль")
+            return
+        
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM t_p52349012_telegram_bot_creatio.bot_admins WHERE chat_id = %s",
+                    (chat_id,)
+                )
+                
+                if cur.fetchone():
+                    send_message(chat_id, "ℹ️ Вы уже являетесь администратором!")
+                else:
+                    cur.execute(
+                        "INSERT INTO t_p52349012_telegram_bot_creatio.bot_admins (chat_id, username, is_active) VALUES (%s, %s, true)",
+                        (chat_id, username)
+                    )
+                    conn.commit()
+                    
+                    send_message(
+                        chat_id,
+                        f"✅ <b>Поздравляем!</b>\n\n"
+                        f"Вы успешно добавлены в список администраторов.\n"
+                        f"Теперь вы будете получать уведомления о новых заявках.\n\n"
+                        f"Ваш Chat ID: <code>{chat_id}</code>"
+                    )
+                    
+                    log_security_event(chat_id, 'admin_added', f'Новый админ добавлен: {username}', 'high')
+        finally:
+            conn.close()
         return
     
     if text == '/start':

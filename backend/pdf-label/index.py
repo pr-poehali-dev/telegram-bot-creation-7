@@ -20,7 +20,7 @@ import io
 import base64
 import psycopg2
 from psycopg2.extras import RealDictCursor
-import urllib.request
+import requests as http_client
 
 BOT_USERNAME = os.environ.get('TELEGRAM_BOT_USERNAME', 'CargoExpressBot')
 
@@ -107,11 +107,43 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
 
 def download_font():
-    font_url = "https://github.com/google/fonts/raw/main/ofl/dejavusans/DejaVuSans.ttf"
     font_path = "/tmp/DejaVuSans.ttf"
     
     if not os.path.exists(font_path):
-        urllib.request.urlretrieve(font_url, font_path)
+        # Используем надёжный источник - GitHub releases
+        font_urls = [
+            "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip",
+            "https://github.com/google/fonts/raw/main/ofl/roboto/static/Roboto-Regular.ttf",
+            "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/static/Roboto-Regular.ttf"
+        ]
+        
+        for font_url in font_urls:
+            try:
+                print(f"Trying to download font from: {font_url}")
+                response = http_client.get(font_url, timeout=10)
+                
+                if response.status_code == 200:
+                    # Если это zip, берём первый TTF файл
+                    if font_url.endswith('.zip'):
+                        import zipfile
+                        import io as io_module
+                        with zipfile.ZipFile(io_module.BytesIO(response.content)) as zf:
+                            for name in zf.namelist():
+                                if 'DejaVuSans.ttf' in name and 'Bold' not in name and 'Oblique' not in name:
+                                    with open(font_path, 'wb') as f:
+                                        f.write(zf.read(name))
+                                    print(f"Font extracted successfully from zip")
+                                    return font_path
+                    else:
+                        with open(font_path, 'wb') as f:
+                            f.write(response.content)
+                        print(f"Font downloaded successfully from {font_url}")
+                        return font_path
+            except Exception as e:
+                print(f"Failed to download from {font_url}: {e}")
+                continue
+        
+        raise Exception("Failed to download font from all sources")
     
     return font_path
 
@@ -168,27 +200,24 @@ def generate_label_pdf(order: Dict[str, Any], order_type: str, label_size: str) 
     
     if label_size == '120x75':
         width, height = 120*MM, 75*MM
-        font_size_title = 14
-        font_size_normal = 10
-        font_size_small = 8
+        font_size_title = 16
+        font_size_normal = 12
+        font_size_small = 10
         qr_size = 20*MM
         line_height = 5*MM
     else:
         width, height = 58*MM, 40*MM
-        font_size_title = 10
-        font_size_normal = 7
-        font_size_small = 6
+        font_size_title = 11
+        font_size_normal = 9
+        font_size_small = 7
         qr_size = 13*MM
         line_height = 3.5*MM
     
     c = canvas.Canvas(buffer, pagesize=(width, height))
     
-    try:
-        font_path = download_font()
-        pdfmetrics.registerFont(TTFont('DejaVu', font_path))
-        c.setFont("DejaVu", font_size_title)
-    except:
-        c.setFont("Helvetica-Bold", font_size_title)
+    font_path = download_font()
+    pdfmetrics.registerFont(TTFont('DejaVu', font_path))
+    c.setFont("DejaVu", font_size_title)
     
     y_position = height - 7*MM
     x_margin = 3*MM
@@ -218,10 +247,7 @@ def generate_label_pdf(order: Dict[str, Any], order_type: str, label_size: str) 
     y_position -= 5*MM
     
     # Выводим текст заявки
-    try:
-        c.setFont("DejaVu", font_size_normal)
-    except:
-        c.setFont("Helvetica", font_size_normal)
+    c.setFont("DejaVu", font_size_normal)
     
     order_text = format_order_text(order, order_type)
     
