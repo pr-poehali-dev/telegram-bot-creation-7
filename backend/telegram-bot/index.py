@@ -307,6 +307,64 @@ def check_suspicious_activity(chat_id: int):
         conn.close()
 
 
+def get_user_templates(chat_id: int) -> List[Dict[str, Any]]:
+    """Получить все шаблоны пользователя"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, template_name, order_type, template_data FROM t_p52349012_telegram_bot_creatio.order_templates WHERE chat_id = %s ORDER BY created_at DESC",
+                (chat_id,)
+            )
+            return cur.fetchall()
+    except:
+        return []
+    finally:
+        conn.close()
+
+
+def save_template(chat_id: int, template_name: str, order_type: str, data: Dict[str, Any]):
+    """Сохранить шаблон заявки"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            import json
+            cur.execute(
+                """
+                INSERT INTO t_p52349012_telegram_bot_creatio.order_templates (chat_id, template_name, order_type, template_data)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (chat_id, template_name) DO UPDATE SET template_data = EXCLUDED.template_data, order_type = EXCLUDED.order_type
+                """,
+                (chat_id, template_name, order_type, json.dumps(data))
+            )
+            conn.commit()
+            return True
+    except Exception as e:
+        print(f"[ERROR] save_template failed: {str(e)}")
+        return False
+    finally:
+        conn.close()
+
+
+def load_template(template_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
+    """Загрузить шаблон по ID"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT template_data, order_type FROM t_p52349012_telegram_bot_creatio.order_templates WHERE id = %s AND chat_id = %s",
+                (template_id, chat_id)
+            )
+            result = cur.fetchone()
+            if result:
+                return {'data': result['template_data'], 'type': result['order_type']}
+            return None
+    except:
+        return None
+    finally:
+        conn.close()
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     method: str = event.get('httpMethod', 'POST')
     
@@ -708,13 +766,9 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         if data.get('type') == 'sender':
             print("[DEBUG] Calling save_sender_order...")
             save_sender_order(chat_id, data)
-            if chat_id in user_states:
-                del user_states[chat_id]
         else:
             print("[DEBUG] Calling save_carrier_order...")
             save_carrier_order(chat_id, data)
-            if chat_id in user_states:
-                del user_states[chat_id]
     
     elif callback_data.startswith('admin_'):
         if str(chat_id) != ADMIN_CHAT_ID:
@@ -935,6 +989,20 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
     
     if text == '/start':
         user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
+        
+        templates = get_user_templates(chat_id)
+        keyboard_buttons = [
+            [{'text': '📦 Отправитель'}],
+            [{'text': '🚚 Перевозчик'}],
+            [{'text': '📋 Мои заявки'}]
+        ]
+        
+        if templates:
+            for template in templates[:5]:
+                template_name = template['template_name']
+                emoji = '📦' if template['order_type'] == 'sender' else '🚚'
+                keyboard_buttons.insert(0, [{'text': f"{emoji} {template_name}"}])
+        
         send_message(
             chat_id,
             "👋 <b>Добро пожаловать!</b>\n\n"
@@ -944,11 +1012,7 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             "• Будьте внимательны к деталям\n\n"
             "<b>Выберите услугу:</b>",
             {
-                'keyboard': [
-                    [{'text': '📦 Отправитель'}],
-                    [{'text': '🚚 Перевозчик'}],
-                    [{'text': '📋 Мои заявки'}]
-                ],
+                'keyboard': keyboard_buttons,
                 'resize_keyboard': True,
                 'one_time_keyboard': False
             }
@@ -1105,7 +1169,73 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         handle_notification_setup(chat_id, text, data)
         return
     
+    if step == 'ask_save_template':
+        if 'да' in text.lower() or '✅' in text:
+            state['step'] = 'enter_template_name'
+            send_message(
+                chat_id,
+                "📝 <b>Введите имя шаблона</b>\n\nНапример: 'WB Коледино' или 'Ежедневная поставка'",
+                {'remove_keyboard': True}
+            )
+        else:
+            if chat_id in user_states:
+                del user_states[chat_id]
+            send_message(
+                chat_id,
+                "✅ Готово! Введите /start для создания новой заявки",
+                {'remove_keyboard': True}
+            )
+        return
+    
+    if step == 'enter_template_name':
+        template_name = text.strip()
+        
+        if len(template_name) < 3:
+            send_message(chat_id, "❌ Имя шаблона должно быть минимум 3 символа. Попробуйте ещё раз:")
+            return
+        
+        if len(template_name) > 50:
+            send_message(chat_id, "❌ Имя шаблона слишком длинное (макс 50 символов). Попробуйте ещё раз:")
+            return
+        
+        order_type = data.get('type', 'sender')
+        
+        if save_template(chat_id, template_name, order_type, data):
+            if chat_id in user_states:
+                del user_states[chat_id]
+            send_message(
+                chat_id,
+                f"✅ <b>Шаблон '{template_name}' сохранён!</b>\n\nТеперь вы увидите его в главном меню при вводе /start",
+                {'remove_keyboard': True}
+            )
+        else:
+            send_message(
+                chat_id,
+                "❌ Ошибка сохранения шаблона. Попробуйте ещё раз или обратитесь к администратору."
+            )
+        return
+    
     if step == 'choose_service':
+        templates = get_user_templates(chat_id)
+        template_found = False
+        
+        for template in templates:
+            if template['template_name'] in text:
+                template_data = template['template_data']
+                template_type = template['order_type']
+                
+                data['type'] = template_type
+                for key, value in template_data.items():
+                    data[key] = value
+                
+                state['step'] = 'show_preview'
+                show_preview(chat_id, data)
+                template_found = True
+                break
+        
+        if template_found:
+            return
+        
         if '📦' in text or 'отправитель' in text.lower():
             data['type'] = 'sender'
             state['step'] = 'choose_marketplace'
@@ -1126,6 +1256,9 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
                 "🏪 <b>Выберите маркетплейс:</b>",
                 {'keyboard': keyboard, 'resize_keyboard': True, 'one_time_keyboard': True}
             )
+        elif 'мои заявки' in text.lower() or '📋' in text:
+            show_my_orders(chat_id)
+            return
         else:
             send_message(chat_id, "Пожалуйста, выберите услугу из меню")
     
@@ -1635,14 +1768,33 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                 
                 send_message(
                     chat_id,
-                    f"✅ <b>Заявка #{order_id} создана!</b>\n\nВаш груз добавлен в систему.",
-                    {'remove_keyboard': True}
+                    f"✅ <b>Заявка #{order_id} создана!</b>\n\nВаш груз добавлен в систему."
                 )
                 
                 send_label_to_user(chat_id, order_id, 'sender', data.get('label_size', '120x75'))
                 notify_about_new_order(order_id, 'sender', data)
                 send_notifications_to_subscribers(order_id, 'sender', data)
                 find_matching_orders_by_date(order_id, 'sender', data)
+                
+                user_states[chat_id] = {
+                    'step': 'ask_save_template',
+                    'data': data,
+                    'order_id': order_id,
+                    'last_activity': time.time()
+                }
+                
+                send_message(
+                    chat_id,
+                    "💾 <b>Сохранить как шаблон?</b>\n\nЭто позволит быстро создавать похожие заявки в будущем.",
+                    {
+                        'keyboard': [
+                            [{'text': '✅ Да, сохранить'}],
+                            [{'text': '❌ Нет, не нужно'}]
+                        ],
+                        'resize_keyboard': True,
+                        'one_time_keyboard': True
+                    }
+                )
         
         finally:
             conn.close()
@@ -1697,13 +1849,32 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
             
             send_message(
                 chat_id,
-                f"✅ <b>Заявка #{order_id} создана!</b>\n\nОтправители получили уведомление о вашем предложении.",
-                {'remove_keyboard': True}
+                f"✅ <b>Заявка #{order_id} создана!</b>\n\nОтправители получили уведомление о вашем предложении."
             )
             
             notify_about_new_order(order_id, 'carrier', data)
             send_notifications_to_subscribers(order_id, 'carrier', data)
             find_matching_orders_by_date(order_id, 'carrier', data)
+            
+            user_states[chat_id] = {
+                'step': 'ask_save_template',
+                'data': data,
+                'order_id': order_id,
+                'last_activity': time.time()
+            }
+            
+            send_message(
+                chat_id,
+                "💾 <b>Сохранить как шаблон?</b>\n\nЭто позволит быстро создавать похожие заявки в будущем.",
+                {
+                    'keyboard': [
+                        [{'text': '✅ Да, сохранить'}],
+                        [{'text': '❌ Нет, не нужно'}]
+                    ],
+                    'resize_keyboard': True,
+                    'one_time_keyboard': True
+                }
+            )
     
     finally:
         conn.close()
@@ -1920,14 +2091,14 @@ def show_my_orders(chat_id: int):
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                "SELECT id, marketplace, warehouse, loading_date FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE phone LIKE %s ORDER BY id DESC LIMIT 10",
-                (f'%{chat_id}%',)
+                "SELECT id, marketplace, warehouse, loading_date FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE chat_id = %s ORDER BY id DESC LIMIT 10",
+                (chat_id,)
             )
             sender_orders = cur.fetchall()
             
             cur.execute(
-                "SELECT id, marketplace, warehouse, loading_date, arrival_date FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE phone LIKE %s ORDER BY id DESC LIMIT 10",
-                (f'%{chat_id}%',)
+                "SELECT id, marketplace, warehouse, loading_date, arrival_date FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE chat_id = %s ORDER BY id DESC LIMIT 10",
+                (chat_id,)
             )
             carrier_orders = cur.fetchall()
             
