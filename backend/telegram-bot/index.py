@@ -218,6 +218,56 @@ def get_user_orders_today(chat_id: int) -> int:
         conn.close()
 
 
+def get_admin_permissions(chat_id: int) -> Dict[str, bool]:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT ba.role, ap.*
+                FROM t_p52349012_telegram_bot_creatio.bot_admins ba
+                LEFT JOIN t_p52349012_telegram_bot_creatio.admin_permissions ap ON ba.id = ap.admin_id
+                WHERE ba.chat_id = %s AND ba.is_active = true
+            """, (chat_id,))
+            result = cur.fetchone()
+            
+            if not result:
+                return None
+            
+            role = result.get('role', 'viewer')
+            
+            if role == 'owner':
+                return {
+                    'role': 'owner',
+                    'can_view_stats': True,
+                    'can_view_orders': True,
+                    'can_remove_orders': True,
+                    'can_manage_users': True,
+                    'can_block_users': True,
+                    'can_manage_admins': True,
+                    'can_view_security_logs': True
+                }
+            
+            return {
+                'role': role,
+                'can_view_stats': result.get('can_view_stats', True),
+                'can_view_orders': result.get('can_view_orders', True),
+                'can_remove_orders': result.get('can_remove_orders', False),
+                'can_manage_users': result.get('can_manage_users', False),
+                'can_block_users': result.get('can_block_users', False),
+                'can_manage_admins': result.get('can_manage_admins', False),
+                'can_view_security_logs': result.get('can_view_security_logs', False)
+            }
+    except:
+        return None
+    finally:
+        conn.close()
+
+
+def is_admin(chat_id: int) -> bool:
+    perms = get_admin_permissions(chat_id)
+    return perms is not None
+
+
 def check_suspicious_activity(chat_id: int):
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
@@ -447,6 +497,35 @@ def send_document(chat_id: int, file_bytes: bytes, filename: str, caption: str =
     requests.post(f"{BASE_URL}/sendDocument", files=files, data=data)
 
 
+def send_label_to_user(chat_id: int, order_id: int, order_type: str, label_size: str):
+    try:
+        response = requests.post(
+            PDF_FUNCTION_URL,
+            json={'order_id': order_id, 'label_size': label_size},
+            headers={'Content-Type': 'application/json'},
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            pdf_base64 = result.get('pdf')
+            
+            if pdf_base64:
+                import base64
+                pdf_bytes = base64.b64decode(pdf_base64)
+                send_document(chat_id, pdf_bytes, f'label_{order_id}.pdf', f'📄 Термоэтикетка для заявки #{order_id}')
+                return True
+            else:
+                print(f"[ERROR] No PDF in response: {result}")
+                return False
+        else:
+            print(f"[ERROR] PDF generation failed: status={response.status_code}, body={response.text}")
+            return False
+    except Exception as e:
+        print(f"[ERROR] send_label_to_user failed: {str(e)}")
+        return False
+
+
 def edit_message(chat_id: int, message_id: int, text: str, reply_markup: Optional[Dict] = None):
     payload = {
         'chat_id': chat_id,
@@ -475,6 +554,94 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
     
     state['last_activity'] = time.time()
     data = state.get('data', {})
+    
+    if callback_data.startswith('set_role_'):
+        role = callback_data.replace('set_role_', '')
+        target_admin_id = state.get('target_admin_id')
+        
+        if not target_admin_id:
+            send_message(chat_id, "❌ Ошибка: ID пользователя не найден")
+            return
+        
+        role_permissions = {
+            'admin': {
+                'can_view_stats': True,
+                'can_view_orders': True,
+                'can_remove_orders': True,
+                'can_manage_users': True,
+                'can_block_users': True,
+                'can_manage_admins': False,
+                'can_view_security_logs': True
+            },
+            'moderator': {
+                'can_view_stats': True,
+                'can_view_orders': True,
+                'can_remove_orders': True,
+                'can_manage_users': False,
+                'can_block_users': True,
+                'can_manage_admins': False,
+                'can_view_security_logs': False
+            },
+            'viewer': {
+                'can_view_stats': True,
+                'can_view_orders': True,
+                'can_remove_orders': False,
+                'can_manage_users': False,
+                'can_block_users': False,
+                'can_manage_admins': False,
+                'can_view_security_logs': False
+            }
+        }
+        
+        perms = role_permissions.get(role, role_permissions['viewer'])
+        
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO t_p52349012_telegram_bot_creatio.bot_admins (chat_id, username, role, is_active) VALUES (%s, %s, %s, true) RETURNING id",
+                    (target_admin_id, f"user_{target_admin_id}", role)
+                )
+                admin_id = cur.fetchone()[0]
+                
+                cur.execute(
+                    """
+                    INSERT INTO t_p52349012_telegram_bot_creatio.admin_permissions 
+                    (admin_id, can_view_stats, can_view_orders, can_remove_orders, can_manage_users, can_block_users, can_manage_admins, can_view_security_logs, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    """,
+                    (admin_id, perms['can_view_stats'], perms['can_view_orders'], perms['can_remove_orders'], perms['can_manage_users'], perms['can_block_users'], perms['can_manage_admins'], perms['can_view_security_logs'])
+                )
+                
+                conn.commit()
+                
+                role_names = {'admin': '⚡️ Администратор', 'moderator': '🛡 Модератор', 'viewer': '👁 Наблюдатель'}
+                send_message(
+                    chat_id,
+                    f"✅ <b>Администратор добавлен!</b>\n\n"
+                    f"Chat ID: <code>{target_admin_id}</code>\n"
+                    f"Роль: {role_names.get(role, role)}\n\n"
+                    f"Пользователь может использовать команду /admin для входа в админ-панель."
+                )
+                
+                log_security_event(chat_id, 'admin_added', f'Добавлен новый админ {target_admin_id} с ролью {role}', 'high')
+        finally:
+            conn.close()
+        
+        if 'target_admin_id' in state:
+            del state['target_admin_id']
+        if 'step' in state:
+            del state['step']
+        
+        return
+    
+    elif callback_data == 'cancel_add_admin':
+        if 'target_admin_id' in state:
+            del state['target_admin_id']
+        if 'step' in state:
+            del state['step']
+        send_message(chat_id, "❌ Добавление администратора отменено")
+        return
     
     if callback_data.startswith('edit_'):
         field = callback_data.replace('edit_', '')
@@ -612,29 +779,70 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             send_message(chat_id, "❌ Неверный формат. Используйте: /unblock CHAT_ID")
         return
     
+    if text == '/add_admin':
+        perms = get_admin_permissions(chat_id)
+        if not perms or not perms.get('can_manage_admins'):
+            send_message(chat_id, "❌ У вас нет прав для добавления администраторов")
+            return
+        
+        state = user_states.get(chat_id, {'step': 'choose_service', 'data': {}})
+        state['step'] = 'add_admin_chat_id'
+        state['last_activity'] = time.time()
+        user_states[chat_id] = state
+        
+        send_message(
+            chat_id,
+            "👤 <b>Добавление администратора</b>\n\n"
+            "Отправьте мне Chat ID пользователя, которого хотите добавить.\n\n"
+            "💡 <i>Подсказка:</i> Пользователь может узнать свой Chat ID командой /my_id"
+        )
+        return
+    
     if text == '/admin':
-        if str(chat_id) != ADMIN_CHAT_ID:
+        perms = get_admin_permissions(chat_id)
+        if not perms:
             send_message(chat_id, "❌ У вас нет прав администратора")
             return
         
         admin_sessions[chat_id] = int(time.time())
         
+        role_text = {
+            'owner': '👑 Владелец',
+            'admin': '⚡️ Администратор',
+            'moderator': '🛡 Модератор',
+            'viewer': '👁 Наблюдатель'
+        }.get(perms.get('role', 'viewer'), '👁 Наблюдатель')
+        
+        buttons = []
+        
+        if perms.get('can_view_stats'):
+            buttons.append([{'text': '📊 Статистика', 'callback_data': 'admin_stats'}])
+            buttons.append([{'text': '📈 Еженедельный отчёт', 'callback_data': 'admin_weekly'}])
+        
+        if perms.get('can_view_security_logs'):
+            buttons.append([{'text': '🔒 Логи безопасности', 'callback_data': 'admin_security_logs'}])
+        
+        if perms.get('can_block_users'):
+            buttons.append([{'text': '🚫 Заблокированные', 'callback_data': 'admin_blocked_users'}])
+        
+        if perms.get('can_manage_users'):
+            buttons.append([{'text': '⚙️ Установить лимит', 'callback_data': 'admin_set_limit'}])
+        
+        if perms.get('can_remove_orders'):
+            buttons.append([{'text': '🗑️ Удалить заявку', 'callback_data': 'admin_delete'}])
+            buttons.append([{'text': '🧹 Очистить старые заявки', 'callback_data': 'admin_cleanup'}])
+        
+        if perms.get('can_manage_admins'):
+            buttons.append([{'text': '👥 Управление админами', 'callback_data': 'admin_manage_admins'}])
+        
+        buttons.append([{'text': '🏠 Выйти из админ-панели', 'callback_data': 'admin_exit'}])
+        
         send_message(
             chat_id,
-            "🔧 <b>Админ-панель</b>\n\n" +
-            "Выберите действие:",
-            {
-                'inline_keyboard': [
-                    [{'text': '📊 Статистика', 'callback_data': 'admin_stats'}],
-                    [{'text': '📈 Еженедельный отчёт', 'callback_data': 'admin_weekly'}],
-                    [{'text': '🔒 Логи безопасности', 'callback_data': 'admin_security_logs'}],
-                    [{'text': '🚫 Заблокированные', 'callback_data': 'admin_blocked_users'}],
-                    [{'text': '⚙️ Установить лимит', 'callback_data': 'admin_set_limit'}],
-                    [{'text': '🗑️ Удалить заявку', 'callback_data': 'admin_delete'}],
-                    [{'text': '🧹 Очистить старые заявки', 'callback_data': 'admin_cleanup'}],
-                    [{'text': '🏠 Выйти из админ-панели', 'callback_data': 'admin_exit'}]
-                ]
-            }
+            f"🔧 <b>Админ-панель</b>\n\n"
+            f"Ваша роль: {role_text}\n\n"
+            f"Выберите действие:",
+            {'inline_keyboard': buttons}
         )
         return
     
@@ -773,7 +981,6 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             return
         
         target_chat_id = int(text)
-        target_username = f"user_{target_chat_id}"
         
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
         try:
@@ -785,18 +992,36 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
                 
                 if cur.fetchone():
                     send_message(chat_id, f"ℹ️ Пользователь {target_chat_id} уже является администратором")
+                    del state['step']
                 else:
-                    cur.execute(
-                        "INSERT INTO t_p52349012_telegram_bot_creatio.bot_admins (chat_id, username, is_active) VALUES (%s, %s, true)",
-                        (target_chat_id, target_username)
-                    )
-                    conn.commit()
+                    state['step'] = 'add_admin_role'
+                    state['target_admin_id'] = target_chat_id
                     
                     send_message(
                         chat_id,
-                        f"✅ <b>Администратор добавлен!</b>\n\n"
-                        f"Chat ID: <code>{target_chat_id}</code>\n"
-                        f"Пользователь будет получать уведомления о новых заявках."
+                        f"👤 <b>Выберите роль для администратора</b>\n\n"
+                        f"Chat ID: <code>{target_chat_id}</code>\n\n"
+                        f"<b>Доступные роли:</b>\n\n"
+                        f"⚡️ <b>Администратор</b> — полный доступ кроме управления админами\n"
+                        f"• Просмотр статистики и заявок\n"
+                        f"• Удаление заявок\n"
+                        f"• Управление пользователями\n"
+                        f"• Блокировка пользователей\n"
+                        f"• Просмотр логов безопасности\n\n"
+                        f"🛡 <b>Модератор</b> — управление контентом\n"
+                        f"• Просмотр статистики и заявок\n"
+                        f"• Удаление заявок\n"
+                        f"• Блокировка пользователей\n\n"
+                        f"👁 <b>Наблюдатель</b> — только просмотр\n"
+                        f"• Просмотр статистики и заявок",
+                        {
+                            'inline_keyboard': [
+                                [{'text': '⚡️ Администратор', 'callback_data': 'set_role_admin'}],
+                                [{'text': '🛡 Модератор', 'callback_data': 'set_role_moderator'}],
+                                [{'text': '👁 Наблюдатель', 'callback_data': 'set_role_viewer'}],
+                                [{'text': '❌ Отмена', 'callback_data': 'cancel_add_admin'}]
+                            ]
+                        }
                     )
                     
                     send_message(

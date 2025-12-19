@@ -164,7 +164,7 @@ def format_order_text(order: Dict[str, Any], order_type: str) -> str:
         
         if order.get('sender_name'): lines.append(f"Контакт: {order['sender_name']}")
         if order.get('phone'): lines.append(f"Телефон: {order['phone']}")
-        if order.get('loading_date'): lines.append(f"Дата ПОГРУЗКИ: {order['loading_date']}")
+        if order.get('delivery_date'): lines.append(f"Дата поставки: {order['delivery_date']}")
         if order.get('rate'): lines.append(f"Ставка: {order['rate']} руб")
         
         return '\n'.join(lines)
@@ -222,8 +222,9 @@ def generate_label_pdf(order: Dict[str, Any], order_type: str, label_size: str) 
     y_position = height - 7*MM
     x_margin = 3*MM
     
-    # Заголовок "CARGO EXPRESS" + QR-код рядом
-    c.drawString(x_margin, y_position, "CARGO EXPRESS")
+    # Заголовок с названием бота + QR-код рядом
+    bot_display_name = BOT_USERNAME.replace('_', ' ').replace('Bot', '').strip()
+    c.drawString(x_margin, y_position, bot_display_name)
     
     try:
         qr_url = f"https://t.me/{BOT_USERNAME}"
@@ -263,12 +264,7 @@ def generate_label_pdf(order: Dict[str, Any], order_type: str, label_size: str) 
         c.drawString(x_margin, y_position, line)
         y_position -= line_height
     
-    try:
-        c.setFont("DejaVu", font_size_small)
-    except:
-        c.setFont("Helvetica", font_size_small)
-    
-    c.drawString(x_margin, 3*MM, f"t.me/{BOT_USERNAME}")
+    # Убираем нижнюю надпись (больше не выводим t.me/{BOT_USERNAME})
     
     c.save()
     pdf_bytes = buffer.getvalue()
