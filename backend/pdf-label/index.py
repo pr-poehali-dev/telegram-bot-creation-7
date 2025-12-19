@@ -238,10 +238,7 @@ def generate_label_pdf(order: Dict[str, Any], order_type: str, label_size: str) 
     y_position = height - 7*MM
     x_margin = 3*MM
     
-    # Заголовок с ссылкой на бота + QR-код рядом
-    bot_link = f"t.me/{BOT_USERNAME}"
-    c.drawString(x_margin, y_position, bot_link)
-    
+    # QR-код слева, название бота справа на одном уровне
     try:
         qr_url = f"https://t.me/{BOT_USERNAME}"
         qr_code = QrCodeWidget(qr_url)
@@ -250,11 +247,17 @@ def generate_label_pdf(order: Dict[str, Any], order_type: str, label_size: str) 
         qr_height = bounds[3] - bounds[1]
         qr_drawing = Drawing(qr_size, qr_size, transform=[qr_size/qr_width, 0, 0, qr_size/qr_height, 0, 0])
         qr_drawing.add(qr_code)
-        renderPDF.draw(qr_drawing, c, width - qr_size - x_margin, y_position - qr_size + 3*MM)
+        renderPDF.draw(qr_drawing, c, x_margin, y_position - qr_size + 3*MM)
     except:
         pass
     
-    y_position -= qr_size + 2*MM
+    # Название бота справа на одном уровне с QR-кодом
+    bot_link = f"t.me/{BOT_USERNAME}"
+    bot_text_x = x_margin + qr_size + 3*MM
+    bot_text_y = y_position - (qr_size / 2)
+    c.drawString(bot_text_x, bot_text_y, bot_link)
+    
+    y_position -= qr_size + 0.5*MM
     
     # Рисуем линию-разделитель
     c.setStrokeColor(colors.black)

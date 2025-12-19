@@ -1848,9 +1848,19 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                 conn.commit()
                 print(f"[DEBUG] Order created with id={order_id}")
                 
+                delivery_date_str = data.get('delivery_date', '')
+                try:
+                    from datetime import datetime, timedelta
+                    delivery_date_obj = datetime.strptime(delivery_date_str, '%Y-%m-%d')
+                    delete_date = delivery_date_obj + timedelta(days=5)
+                    delete_date_str = delete_date.strftime('%d.%m.%Y')
+                    auto_delete_warning = f"\n\n⏰ <b>Важно:</b> Заявка будет автоматически удалена {delete_date_str} (через 5 дней после даты поставки)"
+                except:
+                    auto_delete_warning = "\n\n⏰ <b>Важно:</b> Заявка будет автоматически удалена через 5 дней после даты поставки на склад"
+                
                 send_message(
                     chat_id,
-                    f"✅ <b>Заявка #{order_id} создана!</b>\n\nВаш груз добавлен в систему."
+                    f"✅ <b>Заявка #{order_id} создана!</b>\n\nВаш груз добавлен в систему.{auto_delete_warning}"
                 )
                 
                 send_label_to_user(chat_id, order_id, 'sender', '120x75')
@@ -2109,12 +2119,12 @@ def cleanup_old_orders(chat_id: int):
         with conn.cursor() as cur:
             cur.execute("""
                 DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders 
-                WHERE loading_date < CURRENT_DATE - INTERVAL '1 day'
+                WHERE delivery_date < CURRENT_DATE - INTERVAL '5 days'
             """)
             deleted_count = cur.rowcount
             conn.commit()
             
-            send_message(chat_id, f"🧹 Удалено старых заявок: {deleted_count}")
+            send_message(chat_id, f"🧹 Удалено старых заявок отправителей: {deleted_count}")
     finally:
         conn.close()
 
