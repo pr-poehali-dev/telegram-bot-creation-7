@@ -1824,7 +1824,7 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                 query = f"""
                     INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
                     (loading_address, warehouse, cargo_type, sender_name, phone, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, label_size, marketplace, chat_id, rate, warehouse_normalized)
-                    VALUES ({escape_sql(data.get('loading_address'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(cargo_type)}, {escape_sql(data.get('sender_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('loading_time'))}, {escape_sql(data.get('delivery_date'))}, {data.get('pallet_quantity', 0)}, {data.get('box_quantity', 0)}, '58x40', {escape_sql(data.get('marketplace'))}, {chat_id}, {escape_sql(data.get('rate'))}, {escape_sql(warehouse_norm)})
+                    VALUES ({escape_sql(data.get('loading_address'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(cargo_type)}, {escape_sql(data.get('sender_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('loading_time'))}, {escape_sql(data.get('delivery_date'))}, {data.get('pallet_quantity', 0)}, {data.get('box_quantity', 0)}, '120x75', {escape_sql(data.get('marketplace'))}, {chat_id}, {escape_sql(data.get('rate'))}, {escape_sql(warehouse_norm)})
                     RETURNING id
                 """
                 
@@ -1848,7 +1848,7 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                     f"✅ <b>Заявка #{order_id} создана!</b>\n\nВаш груз добавлен в систему."
                 )
                 
-                send_label_to_user(chat_id, order_id, 'sender', '58x40')
+                send_label_to_user(chat_id, order_id, 'sender', '120x75')
                 notify_about_new_order(order_id, 'sender', data)
                 send_notifications_to_subscribers(order_id, 'sender', data)
                 find_matching_orders_by_date(order_id, 'sender', data)
