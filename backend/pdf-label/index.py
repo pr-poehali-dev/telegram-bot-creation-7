@@ -200,14 +200,14 @@ def generate_label_pdf(order: Dict[str, Any], order_type: str, label_size: str) 
     
     if label_size == '120x75':
         width, height = 120*MM, 75*MM
-        font_size_title = 16
+        font_size_title = 10
         font_size_normal = 12
         font_size_small = 10
         qr_size = 20*MM
         line_height = 5*MM
     else:
         width, height = 58*MM, 40*MM
-        font_size_title = 11
+        font_size_title = 8
         font_size_normal = 9
         font_size_small = 7
         qr_size = 13*MM
@@ -222,9 +222,9 @@ def generate_label_pdf(order: Dict[str, Any], order_type: str, label_size: str) 
     y_position = height - 7*MM
     x_margin = 3*MM
     
-    # Заголовок с названием бота + QR-код рядом
-    bot_display_name = BOT_USERNAME.replace('_', ' ').replace('Bot', '').strip()
-    c.drawString(x_margin, y_position, bot_display_name)
+    # Заголовок с ссылкой на бота + QR-код рядом
+    bot_link = f"t.me/{BOT_USERNAME}"
+    c.drawString(x_margin, y_position, bot_link)
     
     try:
         qr_url = f"https://t.me/{BOT_USERNAME}"

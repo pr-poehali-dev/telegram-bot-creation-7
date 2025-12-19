@@ -365,6 +365,60 @@ def load_template(template_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
         conn.close()
 
 
+def delete_template(chat_id: int, template_id: int) -> bool:
+    """Удалить шаблон по ID"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM t_p52349012_telegram_bot_creatio.order_templates WHERE id = %s AND chat_id = %s",
+                (template_id, chat_id)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        print(f"[ERROR] delete_template failed: {str(e)}")
+        return False
+    finally:
+        conn.close()
+
+
+def show_templates_management(chat_id: int):
+    """Показать управление шаблонами"""
+    templates = get_user_templates(chat_id)
+    
+    if not templates:
+        send_message(
+            chat_id,
+            "📭 <b>У вас пока нет сохранённых шаблонов</b>\n\n"
+            "Шаблоны создаются автоматически после создания заявки.\n"
+            "Введите /start для создания новой заявки."
+        )
+        return
+    
+    message = "💾 <b>Ваши шаблоны:</b>\n\n"
+    buttons = []
+    
+    for template in templates:
+        template_id = template['id']
+        template_name = template['template_name']
+        order_type = template['order_type']
+        emoji = '📦' if order_type == 'sender' else '🚚'
+        
+        message += f"{emoji} <b>{template_name}</b> ({order_type})\n"
+        buttons.append([
+            {'text': f'🗑 Удалить: {template_name}', 'callback_data': f'delete_template_{template_id}'}
+        ])
+    
+    message += "\n💡 Нажмите на шаблон в главном меню чтобы использовать его"
+    
+    send_message(
+        chat_id,
+        message,
+        {'inline_keyboard': buttons}
+    )
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     method: str = event.get('httpMethod', 'POST')
     
@@ -701,6 +755,25 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         send_message(chat_id, "❌ Добавление администратора отменено")
         return
     
+    elif callback_data == 'cancel_create':
+        if chat_id in user_states:
+            del user_states[chat_id]
+        send_message(
+            chat_id,
+            "❌ Создание заявки отменено. Введите /start для начала",
+            {'remove_keyboard': True}
+        )
+        return
+    
+    elif callback_data.startswith('delete_template_'):
+        template_id = int(callback_data.replace('delete_template_', ''))
+        if delete_template(chat_id, template_id):
+            send_message(chat_id, "✅ Шаблон удалён!")
+            show_templates_management(chat_id)
+        else:
+            send_message(chat_id, "❌ Ошибка удаления шаблона")
+        return
+    
     if callback_data.startswith('edit_'):
         field = callback_data.replace('edit_', '')
         state['editing_field'] = field
@@ -998,6 +1071,7 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         ]
         
         if templates:
+            keyboard_buttons.append([{'text': '💾 Мои шаблоны'}])
             for template in templates[:5]:
                 template_name = template['template_name']
                 emoji = '📦' if template['order_type'] == 'sender' else '🚚'
@@ -1258,6 +1332,9 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             )
         elif 'мои заявки' in text.lower() or '📋' in text:
             show_my_orders(chat_id)
+            return
+        elif 'мои шаблоны' in text.lower() or '💾' in text:
+            show_templates_management(chat_id)
             return
         else:
             send_message(chat_id, "Пожалуйста, выберите услугу из меню")
@@ -1805,79 +1882,97 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
 
 
 def save_carrier_order(chat_id: int, data: Dict[str, Any]):
-    user_limit = get_user_daily_limit(chat_id)
-    orders_today = get_user_orders_today(chat_id)
-    
-    if orders_today >= user_limit:
-        log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
-        send_message(
-            chat_id,
-            f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {user_limit} заявок в день.\nПопробуйте завтра.",
-            {'remove_keyboard': True}
-        )
-        return
-    
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    
     try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            warehouse_norm = normalize_warehouse(data.get('warehouse', ''))
-            
-            # Экранируем строки для SQL
-            def escape_sql(value):
-                if value is None:
-                    return 'NULL'
-                if isinstance(value, (int, float)):
-                    return str(value)
-                return "'" + str(value).replace("'", "''") + "'"
-            
-            query = f"""
-                INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
-                (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, marketplace, loading_date, arrival_date, hydroboard, chat_id, warehouse_normalized)
-                VALUES ({escape_sql(data.get('warehouse'))}, {escape_sql(data.get('car_brand'))}, {escape_sql(data.get('car_model'))}, {escape_sql(data.get('license_plate'))}, {data.get('pallet_capacity', 0)}, {data.get('box_capacity', 0)}, {escape_sql(data.get('driver_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('marketplace'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('arrival_date'))}, {escape_sql(data.get('hydroboard'))}, {chat_id}, {escape_sql(warehouse_norm)})
-                RETURNING id
-            """
-            
-            cur.execute(query)
-            
-            result = cur.fetchone()
-            if result is None:
-                raise Exception("INSERT query returned no result")
-            
-            order_id = result['id'] if isinstance(result, dict) else result[0]
-            conn.commit()
-            
+        print(f"[DEBUG] save_carrier_order called for chat_id={chat_id}, data={data}")
+        send_message(chat_id, "⏳ Создаю заявку...")
+        
+        user_limit = get_user_daily_limit(chat_id)
+        orders_today = get_user_orders_today(chat_id)
+        print(f"[DEBUG] user_limit={user_limit}, orders_today={orders_today}")
+        
+        if orders_today >= user_limit:
+            log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
             send_message(
                 chat_id,
-                f"✅ <b>Заявка #{order_id} создана!</b>\n\nОтправители получили уведомление о вашем предложении."
+                f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {user_limit} заявок в день.\nПопробуйте завтра.",
+                {'remove_keyboard': True}
             )
-            
-            notify_about_new_order(order_id, 'carrier', data)
-            send_notifications_to_subscribers(order_id, 'carrier', data)
-            find_matching_orders_by_date(order_id, 'carrier', data)
-            
-            user_states[chat_id] = {
-                'step': 'ask_save_template',
-                'data': data,
-                'order_id': order_id,
-                'last_activity': time.time()
-            }
-            
-            send_message(
-                chat_id,
-                "💾 <b>Сохранить как шаблон?</b>\n\nЭто позволит быстро создавать похожие заявки в будущем.",
-                {
-                    'keyboard': [
-                        [{'text': '✅ Да, сохранить'}],
-                        [{'text': '❌ Нет, не нужно'}]
-                    ],
-                    'resize_keyboard': True,
-                    'one_time_keyboard': True
+            return
+        
+        print("[DEBUG] Connecting to database...")
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                warehouse_norm = normalize_warehouse(data.get('warehouse', ''))
+                
+                # Экранируем строки для SQL
+                def escape_sql(value):
+                    if value is None:
+                        return 'NULL'
+                    if isinstance(value, (int, float)):
+                        return str(value)
+                    return "'" + str(value).replace("'", "''") + "'"
+                
+                print(f"[DEBUG] Executing INSERT query...")
+                
+                query = f"""
+                    INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
+                    (warehouse, car_brand, car_model, license_plate, pallet_capacity, box_capacity, driver_name, phone, marketplace, loading_date, arrival_date, hydroboard, chat_id, warehouse_normalized)
+                    VALUES ({escape_sql(data.get('warehouse'))}, {escape_sql(data.get('car_brand'))}, {escape_sql(data.get('car_model'))}, {escape_sql(data.get('license_plate'))}, {data.get('pallet_capacity', 0)}, {data.get('box_capacity', 0)}, {escape_sql(data.get('driver_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('marketplace'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('arrival_date'))}, {escape_sql(data.get('hydroboard'))}, {chat_id}, {escape_sql(warehouse_norm)})
+                    RETURNING id
+                """
+                
+                print(f"[DEBUG] Query: {query}")
+                cur.execute(query)
+                
+                print("[DEBUG] Fetching order_id...")
+                result = cur.fetchone()
+                print(f"[DEBUG] fetchone result: {result}, type: {type(result)}")
+                
+                if result is None:
+                    raise Exception("INSERT query returned no result")
+                
+                order_id = result['id'] if isinstance(result, dict) else result[0]
+                print(f"[DEBUG] Extracted order_id={order_id}")
+                conn.commit()
+                print(f"[DEBUG] Order created with id={order_id}")
+                
+                send_message(
+                    chat_id,
+                    f"✅ <b>Заявка #{order_id} создана!</b>\n\nОтправители получили уведомление о вашем предложении."
+                )
+                
+                notify_about_new_order(order_id, 'carrier', data)
+                send_notifications_to_subscribers(order_id, 'carrier', data)
+                find_matching_orders_by_date(order_id, 'carrier', data)
+                
+                user_states[chat_id] = {
+                    'step': 'ask_save_template',
+                    'data': data,
+                    'order_id': order_id,
+                    'last_activity': time.time()
                 }
-            )
+                
+                send_message(
+                    chat_id,
+                    "💾 <b>Сохранить как шаблон?</b>\n\nЭто позволит быстро создавать похожие заявки в будущем.",
+                    {
+                        'keyboard': [
+                            [{'text': '✅ Да, сохранить'}],
+                            [{'text': '❌ Нет, не нужно'}]
+                        ],
+                        'resize_keyboard': True,
+                        'one_time_keyboard': True
+                    }
+                )
+        
+        finally:
+            conn.close()
     
-    finally:
-        conn.close()
+    except Exception as e:
+        print(f"[ERROR] save_carrier_order failed: {str(e)}")
+        send_message(chat_id, f"❌ Ошибка создания заявки: {str(e)}\n\nПопробуйте ещё раз или обратитесь к администратору.")
 
 
 def get_blocked_users() -> list:
