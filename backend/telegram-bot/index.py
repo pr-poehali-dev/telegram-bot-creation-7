@@ -613,7 +613,7 @@ def send_label_to_user(chat_id: int, order_id: int, order_type: str, label_size:
     try:
         response = requests.post(
             PDF_FUNCTION_URL,
-            json={'order_id': order_id, 'label_size': label_size},
+            json={'order_id': order_id, 'order_type': order_type, 'label_size': label_size},
             headers={'Content-Type': 'application/json'},
             timeout=30
         )
@@ -842,6 +842,11 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         else:
             print("[DEBUG] Calling save_carrier_order...")
             save_carrier_order(chat_id, data)
+    
+    elif callback_data.startswith('delete_order_'):
+        order_id = int(callback_data.replace('delete_order_', ''))
+        delete_user_order(chat_id, order_id)
+        return
     
     elif callback_data.startswith('admin_'):
         if str(chat_id) != ADMIN_CHAT_ID:
