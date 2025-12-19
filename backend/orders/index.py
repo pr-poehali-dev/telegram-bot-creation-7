@@ -11,43 +11,61 @@ def get_db_connection():
 
 def send_telegram_notification(order_type: str, order_id: int, data: Dict[str, Any]):
     bot_token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-    chat_id = os.environ.get('TELEGRAM_ADMIN_CHAT_ID', '')
     
-    if not bot_token or not chat_id:
+    if not bot_token:
+        return
+    
+    # Получаем всех активных админов из базы
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            SELECT chat_id FROM t_p52349012_telegram_bot_creatio.bot_admins 
+            WHERE is_active = true
+        """)
+        admins = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if not admins:
+            return
+    except:
         return
     
     if order_type == 'sender':
         message = (
             f"📦 <b>Новая заявка отправителя #{order_id}</b>\n\n"
             f"📍 Склад: {data.get('warehouse', 'Не указан')}\n"
-            f"🏠 Адрес погрузки: {data.get('loading_address', 'Не указан')}\n"
-            f"📅 Дата: {data.get('loading_date', '')} {data.get('loading_time', '')}\n"
-            f"📦 Груз: {data.get('pallet_quantity', 0)} паллет, {data.get('box_quantity', 0)} коробок\n"
-            f"👤 Отправитель: {data.get('sender_name', '')}\n"
+            f"🏠 Адрес: {data.get('loadingAddress', data.get('loading_address', 'Не указан'))}\n"
+            f"📅 Дата: {data.get('loadingDate', data.get('loading_date', ''))} {data.get('loadingTime', data.get('loading_time', ''))}\n"
+            f"📦 Груз: {data.get('palletQuantity', data.get('pallet_quantity', 0))} паллет, {data.get('boxQuantity', data.get('box_quantity', 0))} коробок\n"
+            f"👤 Отправитель: {data.get('senderName', data.get('sender_name', ''))}\n"
             f"📱 Телефон: {data.get('phone', '')}"
         )
     else:
         message = (
             f"🚚 <b>Новая заявка перевозчика #{order_id}</b>\n\n"
-            f"🚗 Автомобиль: {data.get('car_brand', '')} {data.get('car_model', '')}\n"
-            f"🔢 Номер: {data.get('license_plate', '')}\n"
-            f"📦 Вместимость: {data.get('pallet_capacity', 0)} паллет, {data.get('box_capacity', 0)} коробок\n"
+            f"🚗 Автомобиль: {data.get('carBrand', data.get('car_brand', ''))} {data.get('carModel', data.get('car_model', ''))}\n"
+            f"🔢 Номер: {data.get('licensePlate', data.get('license_plate', ''))}\n"
+            f"📦 Вместимость: {data.get('palletCapacity', data.get('pallet_capacity', 0))} паллет, {data.get('boxCapacity', data.get('box_capacity', 0))} коробок\n"
             f"📍 Склад: {data.get('warehouse', 'Не указан')}\n"
-            f"👤 Водитель: {data.get('driver_name', '')}\n"
+            f"👤 Водитель: {data.get('driverName', data.get('driver_name', ''))}\n"
             f"📱 Телефон: {data.get('phone', '')}"
         )
     
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{bot_token}/sendMessage",
-            json={
-                'chat_id': chat_id,
-                'text': message,
-                'parse_mode': 'HTML'
-            }
-        )
-    except:
-        pass
+    # Отправляем уведомление всем админам
+    for admin in admins:
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                json={
+                    'chat_id': admin['chat_id'],
+                    'text': message,
+                    'parse_mode': 'HTML'
+                }
+            )
+        except:
+            pass
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     method: str = event.get('httpMethod', 'GET')

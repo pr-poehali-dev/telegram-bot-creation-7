@@ -168,18 +168,18 @@ def generate_label_pdf(order: Dict[str, Any], order_type: str, label_size: str) 
     
     if label_size == '120x75':
         width, height = 120*MM, 75*MM
-        font_size_title = 11
-        font_size_normal = 8
-        font_size_small = 6
-        qr_size = 18*MM
-        line_height = 4*MM
+        font_size_title = 14
+        font_size_normal = 10
+        font_size_small = 8
+        qr_size = 20*MM
+        line_height = 5*MM
     else:
         width, height = 58*MM, 40*MM
-        font_size_title = 8
-        font_size_normal = 6
-        font_size_small = 5
-        qr_size = 12*MM
-        line_height = 3*MM
+        font_size_title = 10
+        font_size_normal = 7
+        font_size_small = 6
+        qr_size = 13*MM
+        line_height = 3.5*MM
     
     c = canvas.Canvas(buffer, pagesize=(width, height))
     
