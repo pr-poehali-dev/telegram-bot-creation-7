@@ -868,6 +868,16 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
                 f"✏️ Введите новое значение для <b>{field_names.get(field, field)}</b>:"
             )
     
+    elif callback_data == 'save_as_template':
+        template_name = f"Шаблон {datetime.now().strftime('%d.%m %H:%M')}"
+        order_type = data.get('type', 'sender')
+        if save_template(chat_id, template_name, order_type, data):
+            send_message(chat_id, "✅ Шаблон сохранён!\n\nПродолжайте редактирование или создайте заявку.")
+        else:
+            send_message(chat_id, "❌ Ошибка сохранения шаблона")
+        show_preview(chat_id, data)
+        return
+    
     elif callback_data == 'confirm_create':
         print(f"[DEBUG] confirm_create pressed by chat_id={chat_id}, type={data.get('type')}")
         if data.get('type') == 'sender':
@@ -877,9 +887,18 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
             print("[DEBUG] Calling save_carrier_order...")
             save_carrier_order(chat_id, data)
     
+    elif callback_data.startswith('edit_order_'):
+        parts = callback_data.replace('edit_order_', '').split('_')
+        order_type = parts[0]
+        order_id = int(parts[1])
+        load_order_for_edit(chat_id, order_id, order_type)
+        return
+    
     elif callback_data.startswith('delete_order_'):
-        order_id = int(callback_data.replace('delete_order_', ''))
-        delete_user_order(chat_id, order_id)
+        parts = callback_data.replace('delete_order_', '').split('_')
+        order_type = parts[0]
+        order_id = int(parts[1])
+        delete_user_order(chat_id, order_id, order_type)
         return
     
     elif callback_data.startswith('admin_'):
@@ -1282,19 +1301,6 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         handle_notification_setup(chat_id, text, data)
         return
     
-    if step == 'ask_save_template':
-        if 'да' in text.lower() or '✅' in text:
-            state['step'] = 'enter_template_name'
-            send_message(
-                chat_id,
-                "📝 <b>Введите имя шаблона</b>\n\nНапример: 'WB Коледино' или 'Ежедневная поставка'",
-                {'remove_keyboard': True}
-            )
-        else:
-            send_message(chat_id, "✅ Заявка создана!")
-            show_main_menu(chat_id)
-        return
-    
     if step == 'enter_template_name':
         template_name = text.strip()
         
@@ -1307,7 +1313,6 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             return
         
         order_type = data.get('type', 'sender')
-        
         if save_template(chat_id, template_name, order_type, data):
             send_message(
                 chat_id,
@@ -1753,6 +1758,9 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
                     {'text': '✏️ Ставка', 'callback_data': 'edit_rate'}
                 ],
                 [
+                    {'text': '💾 Сохранить как шаблон', 'callback_data': 'save_as_template'}
+                ],
+                [
                     {'text': '✅ СОЗДАТЬ ЗАЯВКУ', 'callback_data': 'confirm_create'}
                 ],
                 [
@@ -1804,6 +1812,9 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
                     {'text': '✏️ Дата прибытия', 'callback_data': 'edit_arrival_date'}
                 ],
                 [
+                    {'text': '💾 Сохранить как шаблон', 'callback_data': 'save_as_template'}
+                ],
+                [
                     {'text': '✅ СОЗДАТЬ ЗАЯВКУ', 'callback_data': 'confirm_create'}
                 ],
                 [
@@ -1818,20 +1829,27 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
 def save_sender_order(chat_id: int, data: Dict[str, Any]):
     try:
         print(f"[DEBUG] save_sender_order called for chat_id={chat_id}, data={data}")
-        send_message(chat_id, "⏳ Создаю заявку...")
+        edit_mode = data.get('edit_mode', False)
+        original_order_id = data.get('original_order_id')
         
-        user_limit = get_user_daily_limit(chat_id)
-        orders_today = get_user_orders_today(chat_id)
-        print(f"[DEBUG] user_limit={user_limit}, orders_today={orders_today}")
+        if edit_mode:
+            send_message(chat_id, "⏳ Сохраняю изменения...")
+        else:
+            send_message(chat_id, "⏳ Создаю заявку...")
         
-        if orders_today >= user_limit:
-            log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
-            send_message(
-                chat_id,
-                f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {user_limit} заявок в день.\nПопробуйте завтра.",
-                {'remove_keyboard': True}
-            )
-            return
+        if not edit_mode:
+            user_limit = get_user_daily_limit(chat_id)
+            orders_today = get_user_orders_today(chat_id)
+            print(f"[DEBUG] user_limit={user_limit}, orders_today={orders_today}")
+        
+            if orders_today >= user_limit:
+                log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
+                send_message(
+                    chat_id,
+                    f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {user_limit} заявок в день.\nПопробуйте завтра.",
+                    {'remove_keyboard': True}
+                )
+                return
         
         print("[DEBUG] Connecting to database...")
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
@@ -1848,8 +1866,6 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                 else:
                     cargo_type = 'box'
                 
-                print(f"[DEBUG] Executing INSERT query...")
-                
                 # Экранируем строки для SQL
                 def escape_sql(value):
                     if value is None:
@@ -1858,67 +1874,82 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                         return str(value)
                     return "'" + str(value).replace("'", "''") + "'"
                 
-                query = f"""
-                    INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
-                    (loading_address, warehouse, cargo_type, sender_name, phone, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, label_size, marketplace, chat_id, rate, warehouse_normalized)
-                    VALUES ({escape_sql(data.get('loading_address'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(cargo_type)}, {escape_sql(data.get('sender_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('loading_time'))}, {escape_sql(data.get('delivery_date'))}, {data.get('pallet_quantity', 0)}, {data.get('box_quantity', 0)}, '120x75', {escape_sql(data.get('marketplace'))}, {chat_id}, {escape_sql(data.get('rate'))}, {escape_sql(warehouse_norm)})
-                    RETURNING id
-                """
+                if edit_mode and original_order_id:
+                    print(f"[DEBUG] Executing UPDATE query for order_id={original_order_id}...")
+                    query = f"""
+                        UPDATE t_p52349012_telegram_bot_creatio.sender_orders
+                        SET loading_address = {escape_sql(data.get('loading_address'))},
+                            warehouse = {escape_sql(data.get('warehouse'))},
+                            cargo_type = {escape_sql(cargo_type)},
+                            sender_name = {escape_sql(data.get('sender_name'))},
+                            phone = {escape_sql(data.get('phone'))},
+                            loading_date = {escape_sql(data.get('loading_date'))},
+                            loading_time = {escape_sql(data.get('loading_time'))},
+                            delivery_date = {escape_sql(data.get('delivery_date'))},
+                            pallet_quantity = {data.get('pallet_quantity', 0)},
+                            box_quantity = {data.get('box_quantity', 0)},
+                            marketplace = {escape_sql(data.get('marketplace'))},
+                            rate = {escape_sql(data.get('rate'))},
+                            warehouse_normalized = {escape_sql(warehouse_norm)}
+                        WHERE id = {original_order_id} AND chat_id = {chat_id}
+                        RETURNING id
+                    """
+                    order_id = original_order_id
+                else:
+                    print(f"[DEBUG] Executing INSERT query...")
+                    query = f"""
+                        INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
+                        (loading_address, warehouse, cargo_type, sender_name, phone, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, label_size, marketplace, chat_id, rate, warehouse_normalized)
+                        VALUES ({escape_sql(data.get('loading_address'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(cargo_type)}, {escape_sql(data.get('sender_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('loading_time'))}, {escape_sql(data.get('delivery_date'))}, {data.get('pallet_quantity', 0)}, {data.get('box_quantity', 0)}, '120x75', {escape_sql(data.get('marketplace'))}, {chat_id}, {escape_sql(data.get('rate'))}, {escape_sql(warehouse_norm)})
+                        RETURNING id
+                    """
                 
                 print(f"[DEBUG] Query: {query}")
                 cur.execute(query)
                 
-                print("[DEBUG] Fetching order_id...")
-                result = cur.fetchone()
-                print(f"[DEBUG] fetchone result: {result}, type: {type(result)}")
-                
-                if result is None:
-                    raise Exception("INSERT query returned no result")
-                
-                order_id = result['id'] if isinstance(result, dict) else result[0]
+                if not edit_mode:
+                    print("[DEBUG] Fetching order_id...")
+                    result = cur.fetchone()
+                    print(f"[DEBUG] fetchone result: {result}, type: {type(result)}")
+                    
+                    if result is None:
+                        raise Exception("INSERT query returned no result")
+                    
+                    order_id = result['id'] if isinstance(result, dict) else result[0]
                 print(f"[DEBUG] Extracted order_id={order_id}")
                 conn.commit()
-                print(f"[DEBUG] Order created with id={order_id}")
+                print(f"[DEBUG] Order {'updated' if edit_mode else 'created'} with id={order_id}")
                 
-                delivery_date_str = data.get('delivery_date', '')
-                try:
-                    from datetime import datetime, timedelta
-                    delivery_date_obj = datetime.strptime(delivery_date_str, '%Y-%m-%d')
-                    delete_date = delivery_date_obj + timedelta(days=5)
-                    delete_date_str = delete_date.strftime('%d.%m.%Y')
-                    auto_delete_warning = f"\n\n⏰ <b>Важно:</b> Заявка будет автоматически удалена {delete_date_str} (через 5 дней после даты поставки)"
-                except:
-                    auto_delete_warning = "\n\n⏰ <b>Важно:</b> Заявка будет автоматически удалена через 5 дней после даты поставки на склад"
-                
-                send_message(
-                    chat_id,
-                    f"✅ <b>Заявка #{order_id} создана!</b>\n\nВаш груз добавлен в систему.{auto_delete_warning}"
-                )
-                
-                send_label_to_user(chat_id, order_id, 'sender', '120x75')
-                notify_about_new_order(order_id, 'sender', data)
+                if edit_mode:
+                    send_message(
+                        chat_id,
+                        f"✅ <b>Заявка #{order_id} обновлена!</b>\n\nИзменения сохранены."
+                    )
+                else:
+                    delivery_date_str = data.get('delivery_date', '')
+                    try:
+                        from datetime import datetime, timedelta
+                        delivery_date_obj = datetime.strptime(delivery_date_str, '%Y-%m-%d')
+                        delete_date = delivery_date_obj + timedelta(days=5)
+                        delete_date_str = delete_date.strftime('%d.%m.%Y')
+                        auto_delete_warning = f"\n\n⏰ <b>Важно:</b> Заявка будет автоматически удалена {delete_date_str} (через 5 дней после даты поставки)"
+                    except:
+                        auto_delete_warning = "\n\n⏰ <b>Важно:</b> Заявка будет автоматически удалена через 5 дней после даты поставки на склад"
+                    
+                    send_message(
+                        chat_id,
+                        f"✅ <b>Заявка #{order_id} создана!</b>\n\nВаш груз добавлен в систему.{auto_delete_warning}"
+                    )
+                    
+                    send_label_to_user(chat_id, data, 'sender')
+                    notify_about_new_order(order_id, 'sender', data)
                 send_notifications_to_subscribers(order_id, 'sender', data)
                 find_matching_orders_by_date(order_id, 'sender', data)
                 
-                user_states[chat_id] = {
-                    'step': 'ask_save_template',
-                    'data': data,
-                    'order_id': order_id,
-                    'last_activity': time.time()
-                }
+                if chat_id in user_states:
+                    del user_states[chat_id]
                 
-                send_message(
-                    chat_id,
-                    "💾 <b>Сохранить как шаблон?</b>\n\nЭто позволит быстро создавать похожие заявки в будущем.",
-                    {
-                        'keyboard': [
-                            [{'text': '✅ Да, сохранить'}],
-                            [{'text': '❌ Нет, не нужно'}]
-                        ],
-                        'resize_keyboard': True,
-                        'one_time_keyboard': True
-                    }
-                )
+                show_main_menu(chat_id)
         
         finally:
             conn.close()
@@ -1931,20 +1962,27 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
 def save_carrier_order(chat_id: int, data: Dict[str, Any]):
     try:
         print(f"[DEBUG] save_carrier_order called for chat_id={chat_id}, data={data}")
-        send_message(chat_id, "⏳ Создаю заявку...")
+        edit_mode = data.get('edit_mode', False)
+        original_order_id = data.get('original_order_id')
         
-        user_limit = get_user_daily_limit(chat_id)
-        orders_today = get_user_orders_today(chat_id)
-        print(f"[DEBUG] user_limit={user_limit}, orders_today={orders_today}")
+        if edit_mode:
+            send_message(chat_id, "⏳ Сохраняю изменения...")
+        else:
+            send_message(chat_id, "⏳ Создаю заявку...")
         
-        if orders_today >= user_limit:
-            log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
-            send_message(
-                chat_id,
-                f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {user_limit} заявок в день.\nПопробуйте завтра.",
-                {'remove_keyboard': True}
-            )
-            return
+        if not edit_mode:
+            user_limit = get_user_daily_limit(chat_id)
+            orders_today = get_user_orders_today(chat_id)
+            print(f"[DEBUG] user_limit={user_limit}, orders_today={orders_today}")
+        
+            if orders_today >= user_limit:
+                log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
+                send_message(
+                    chat_id,
+                    f"❌ <b>Превышен лимит заявок</b>\n\nВы можете создать максимум {user_limit} заявок в день.\nПопробуйте завтра.",
+                    {'remove_keyboard': True}
+                )
+                return
         
         print("[DEBUG] Connecting to database...")
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
@@ -1966,58 +2004,71 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                         return str(value)
                     return "'" + str(value).replace("'", "''") + "'"
                 
-                print(f"[DEBUG] Executing INSERT query...")
-                
-                query = f"""
-                    INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
-                    (car_brand, license_plate, capacity_type, driver_name, phone, warehouse, car_model, pallet_capacity, box_capacity, marketplace, loading_date, arrival_date, hydroboard, chat_id, warehouse_normalized)
-                    VALUES ({escape_sql(data.get('car_brand'))}, {escape_sql(data.get('license_plate'))}, {escape_sql(capacity_type)}, {escape_sql(data.get('driver_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(data.get('car_model'))}, {pallet_cap}, {box_cap}, {escape_sql(data.get('marketplace'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('arrival_date'))}, {escape_sql(data.get('hydroboard'))}, {chat_id}, {escape_sql(warehouse_norm)})
-                    RETURNING id
-                """
+                if edit_mode and original_order_id:
+                    print(f"[DEBUG] Executing UPDATE query for order_id={original_order_id}...")
+                    query = f"""
+                        UPDATE t_p52349012_telegram_bot_creatio.carrier_orders
+                        SET car_brand = {escape_sql(data.get('car_brand'))},
+                            license_plate = {escape_sql(data.get('license_plate'))},
+                            capacity_type = {escape_sql(capacity_type)},
+                            driver_name = {escape_sql(data.get('driver_name'))},
+                            phone = {escape_sql(data.get('phone'))},
+                            warehouse = {escape_sql(data.get('warehouse'))},
+                            car_model = {escape_sql(data.get('car_model'))},
+                            pallet_capacity = {pallet_cap},
+                            box_capacity = {box_cap},
+                            marketplace = {escape_sql(data.get('marketplace'))},
+                            loading_date = {escape_sql(data.get('loading_date'))},
+                            arrival_date = {escape_sql(data.get('arrival_date'))},
+                            hydroboard = {escape_sql(data.get('hydroboard'))},
+                            warehouse_normalized = {escape_sql(warehouse_norm)}
+                        WHERE id = {original_order_id} AND chat_id = {chat_id}
+                        RETURNING id
+                    """
+                    order_id = original_order_id
+                else:
+                    print(f"[DEBUG] Executing INSERT query...")
+                    query = f"""
+                        INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
+                        (car_brand, license_plate, capacity_type, driver_name, phone, warehouse, car_model, pallet_capacity, box_capacity, marketplace, loading_date, arrival_date, hydroboard, chat_id, warehouse_normalized)
+                        VALUES ({escape_sql(data.get('car_brand'))}, {escape_sql(data.get('license_plate'))}, {escape_sql(capacity_type)}, {escape_sql(data.get('driver_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(data.get('car_model'))}, {pallet_cap}, {box_cap}, {escape_sql(data.get('marketplace'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('arrival_date'))}, {escape_sql(data.get('hydroboard'))}, {chat_id}, {escape_sql(warehouse_norm)})
+                        RETURNING id
+                    """
                 
                 print(f"[DEBUG] Query: {query}")
                 cur.execute(query)
                 
-                print("[DEBUG] Fetching order_id...")
-                result = cur.fetchone()
-                print(f"[DEBUG] fetchone result: {result}, type: {type(result)}")
-                
-                if result is None:
-                    raise Exception("INSERT query returned no result")
-                
-                order_id = result['id'] if isinstance(result, dict) else result[0]
+                if not edit_mode:
+                    print("[DEBUG] Fetching order_id...")
+                    result = cur.fetchone()
+                    print(f"[DEBUG] fetchone result: {result}, type: {type(result)}")
+                    
+                    if result is None:
+                        raise Exception("INSERT query returned no result")
+                    
+                    order_id = result['id'] if isinstance(result, dict) else result[0]
                 print(f"[DEBUG] Extracted order_id={order_id}")
                 conn.commit()
-                print(f"[DEBUG] Order created with id={order_id}")
+                print(f"[DEBUG] Order {'updated' if edit_mode else 'created'} with id={order_id}")
                 
-                send_message(
-                    chat_id,
-                    f"✅ <b>Заявка #{order_id} создана!</b>\n\nОтправители получили уведомление о вашем предложении."
-                )
-                
-                notify_about_new_order(order_id, 'carrier', data)
+                if edit_mode:
+                    send_message(
+                        chat_id,
+                        f"✅ <b>Заявка #{order_id} обновлена!</b>\n\nИзменения сохранены."
+                    )
+                else:
+                    send_message(
+                        chat_id,
+                        f"✅ <b>Заявка #{order_id} создана!</b>\n\nОтправители получили уведомление о вашем предложении."
+                    )
+                    notify_about_new_order(order_id, 'carrier', data)
                 send_notifications_to_subscribers(order_id, 'carrier', data)
                 find_matching_orders_by_date(order_id, 'carrier', data)
                 
-                user_states[chat_id] = {
-                    'step': 'ask_save_template',
-                    'data': data,
-                    'order_id': order_id,
-                    'last_activity': time.time()
-                }
+                if chat_id in user_states:
+                    del user_states[chat_id]
                 
-                send_message(
-                    chat_id,
-                    "💾 <b>Сохранить как шаблон?</b>\n\nЭто позволит быстро создавать похожие заявки в будущем.",
-                    {
-                        'keyboard': [
-                            [{'text': '✅ Да, сохранить'}],
-                            [{'text': '❌ Нет, не нужно'}]
-                        ],
-                        'resize_keyboard': True,
-                        'one_time_keyboard': True
-                    }
-                )
+                show_main_menu(chat_id)
         
         finally:
             conn.close()
@@ -2265,10 +2316,16 @@ def show_my_orders(chat_id: int):
                     message_parts.append(
                         f"#{order['id']} - {order.get('marketplace', '-')} → {order.get('warehouse', '-')} ({order.get('loading_date', '-')})\n"
                     )
-                    keyboard_buttons.append([{
-                        'text': f"🗑️ Удалить #{order['id']}",
-                        'callback_data': f"delete_order_{order['id']}"
-                    }])
+                    keyboard_buttons.append([
+                        {
+                            'text': f"✏️ Редактировать #{order['id']}",
+                            'callback_data': f"edit_order_sender_{order['id']}"
+                        },
+                        {
+                            'text': f"🗑️ Удалить #{order['id']}",
+                            'callback_data': f"delete_order_sender_{order['id']}"
+                        }
+                    ])
             
             if carrier_orders:
                 message_parts.append("\n🚚 <b>Ваши заявки перевозчика:</b>\n")
@@ -2278,10 +2335,16 @@ def show_my_orders(chat_id: int):
                     message_parts.append(
                         f"#{order['id']} - {order.get('marketplace', '-')} → {order.get('warehouse', '-')} ({loading} - {arrival})\n"
                     )
-                    keyboard_buttons.append([{
-                        'text': f"🗑️ Удалить #{order['id']}",
-                        'callback_data': f"delete_order_{order['id']}"
-                    }])
+                    keyboard_buttons.append([
+                        {
+                            'text': f"✏️ Редактировать #{order['id']}",
+                            'callback_data': f"edit_order_carrier_{order['id']}"
+                        },
+                        {
+                            'text': f"🗑️ Удалить #{order['id']}",
+                            'callback_data': f"delete_order_carrier_{order['id']}"
+                        }
+                    ])
             
             send_message(
                 chat_id,
@@ -2292,41 +2355,53 @@ def show_my_orders(chat_id: int):
         conn.close()
 
 
-def delete_user_order(chat_id: int, order_id: int):
+def delete_user_order(chat_id: int, order_id: int, order_type: str):
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor() as cur:
+            table = 'sender_orders' if order_type == 'sender' else 'carrier_orders'
             cur.execute(
-                "SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s AND chat_id = %s",
+                f"DELETE FROM t_p52349012_telegram_bot_creatio.{table} WHERE id = %s AND chat_id = %s",
                 (order_id, chat_id)
             )
-            
-            if cur.fetchone():
+            conn.commit()
+            show_my_orders(chat_id)
+    finally:
+        conn.close()
+
+
+def load_order_for_edit(chat_id: int, order_id: int, order_type: str):
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if order_type == 'sender':
                 cur.execute(
-                    "DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s AND chat_id = %s",
+                    "SELECT * FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s AND chat_id = %s",
                     (order_id, chat_id)
                 )
-                conn.commit()
-                send_message(chat_id, f"✅ Заявка #{order_id} удалена")
-                show_my_orders(chat_id)
-                return
-            
-            cur.execute(
-                "SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE id = %s AND chat_id = %s",
-                (order_id, chat_id)
-            )
-            
-            if cur.fetchone():
+            else:
                 cur.execute(
-                    "DELETE FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE id = %s AND chat_id = %s",
+                    "SELECT * FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE id = %s AND chat_id = %s",
                     (order_id, chat_id)
                 )
-                conn.commit()
-                send_message(chat_id, f"✅ Заявка #{order_id} удалена")
-                show_my_orders(chat_id)
+            
+            order = cur.fetchone()
+            if not order:
+                send_message(chat_id, "❌ Заявка не найдена")
                 return
             
-            send_message(chat_id, f"❌ Заявка #{order_id} не найдена или вы не являетесь её владельцем")
+            data = dict(order)
+            data['type'] = order_type
+            data['edit_mode'] = True
+            data['original_order_id'] = order_id
+            
+            user_states[chat_id] = {
+                'step': 'show_preview',
+                'data': data,
+                'last_activity': time.time()
+            }
+            
+            show_preview(chat_id, data)
     finally:
         conn.close()
 
