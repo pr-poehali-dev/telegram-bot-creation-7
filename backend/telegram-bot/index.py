@@ -191,6 +191,44 @@ def get_user_templates(chat_id: int) -> List[Dict[str, Any]]:
     finally:
         conn.close()
 
+def save_template(chat_id: int, template_name: str, order_type: str, data: Dict[str, Any]) -> bool:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO t_p52349012_telegram_bot_creatio.order_templates (chat_id, template_name, template_type, template_data) VALUES (%s, %s, %s, %s)", (chat_id, template_name, order_type, json.dumps(data)))
+            conn.commit()
+            return True
+    except:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def delete_template(chat_id: int, template_id: int) -> bool:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM t_p52349012_telegram_bot_creatio.order_templates WHERE id = %s AND chat_id = %s", (template_id, chat_id))
+            conn.commit()
+            return True
+    except:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def get_template_by_id(template_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM t_p52349012_telegram_bot_creatio.order_templates WHERE id = %s AND chat_id = %s", (template_id, chat_id))
+            result = cur.fetchone()
+            return dict(result) if result else None
+    except:
+        return None
+    finally:
+        conn.close()
+
 def send_message(chat_id: int, text: str, reply_markup: Optional[Dict] = None):
     """Отправить сообщение через Telegram Bot API"""
     url = f"{BASE_URL}/sendMessage"
@@ -698,16 +736,57 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         )
         return
     
-    elif callback_data.startswith('use_template_'):
-        template_id = int(callback_data.replace('use_template_', ''))
-        template = load_template(template_id, chat_id)
+    elif callback_data.startswith('view_template_'):
+        template_id = int(callback_data.replace('view_template_', ''))
+        template = get_template_by_id(template_id, chat_id)
         
         if not template:
             send_message(chat_id, "❌ Шаблон не найден")
             return
         
-        template_data = template['data']
-        template_type = template['type']
+        template_data = json.loads(template['template_data']) if isinstance(template['template_data'], str) else template['template_data']
+        template_type = template['template_type']
+        template_name = template['template_name']
+        
+        preview_text = f"📋 <b>Шаблон: {template_name}</b>\n\n"
+        preview_text += f"📦 <b>Тип:</b> {'Отправитель' if template_type == 'sender' else 'Перевозчик'}\n\n"
+        
+        if template_type == 'sender':
+            preview_text += f"🏪 <b>Маркетплейс:</b> {template_data.get('marketplace', 'Не указан')}\n"
+            preview_text += f"📍 <b>Склад:</b> {template_data.get('warehouse', 'Не указан')}\n"
+            preview_text += f"📦 <b>Паллеты:</b> {template_data.get('pallet_quantity', 0)}\n"
+            preview_text += f"📦 <b>Коробки:</b> {template_data.get('box_quantity', 0)}\n"
+        else:
+            preview_text += f"🏪 <b>Маркетплейс:</b> {template_data.get('marketplace', 'Не указан')}\n"
+            preview_text += f"📍 <b>Склад:</b> {template_data.get('warehouse', 'Не указан')}\n"
+            preview_text += f"🚗 <b>Авто:</b> {template_data.get('car_brand', '')} {template_data.get('car_model', '')}\n"
+            preview_text += f"📦 <b>Вместимость паллет:</b> {template_data.get('pallet_capacity', 0)}\n"
+        
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '✅ Использовать', 'callback_data': f'use_template_{template_id}'}],
+                [{'text': '🗑 Удалить', 'callback_data': f'delete_template_{template_id}'}],
+                [{'text': '⬅️ Назад к шаблонам', 'callback_data': 'back_to_templates'}]
+            ]
+        }
+        
+        edit_message(chat_id, message_id, preview_text, keyboard)
+        return
+    
+    elif callback_data == 'back_to_templates':
+        show_templates_management(chat_id)
+        return
+    
+    elif callback_data.startswith('use_template_'):
+        template_id = int(callback_data.replace('use_template_', ''))
+        template = get_template_by_id(template_id, chat_id)
+        
+        if not template:
+            send_message(chat_id, "❌ Шаблон не найден")
+            return
+        
+        template_data = json.loads(template['template_data']) if isinstance(template['template_data'], str) else template['template_data']
+        template_type = template['template_type']
         
         data['type'] = template_type
         for key, value in template_data.items():
@@ -1055,15 +1134,12 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
     if text == '/start':
         user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
         
-        templates = get_user_templates(chat_id)
         keyboard_buttons = [
             [{'text': '📦 Отправитель'}],
             [{'text': '🚚 Перевозчик'}],
-            [{'text': '📋 Мои заявки'}]
+            [{'text': '📋 Мои заявки'}],
+            [{'text': '💾 Мои шаблоны'}]
         ]
-        
-        if templates:
-            keyboard_buttons.append([{'text': '💾 Мои шаблоны'}])
         
         reply_markup = {
             'keyboard': keyboard_buttons,
