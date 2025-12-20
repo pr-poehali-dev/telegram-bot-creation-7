@@ -2309,60 +2309,39 @@ def show_my_orders(chat_id: int):
                 )
                 return
             
-            message_parts = []
-            keyboard_buttons = []
-            
             if sender_orders:
-                message_parts.append("📦 <b>Ваши заявки отправителя:</b>\n")
-                for i, order in enumerate(sender_orders):
-                    message_parts.append(
-                        f"#{order['id']} - {order.get('marketplace', '-')} → {order.get('warehouse', '-')} ({order.get('loading_date', '-')})\n"
-                    )
-                    keyboard_buttons.append([
-                        {
-                            'text': f"✏️ Редактировать",
-                            'callback_data': f"edit_order_sender_{order['id']}"
-                        }
-                    ])
-                    keyboard_buttons.append([
-                        {
-                            'text': f"🗑️ Удалить",
-                            'callback_data': f"delete_order_sender_{order['id']}"
-                        }
-                    ])
-                    
-                    if i < len(sender_orders) - 1:
-                        keyboard_buttons.append([{'text': '—————————', 'callback_data': 'ignore'}])
+                send_message(chat_id, "📦 <b>Ваши заявки отправителя:</b>")
+                for order in sender_orders:
+                    order_text = f"#{order['id']} - {order.get('marketplace', '-')} → {order.get('warehouse', '-')} ({order.get('loading_date', '-')})"
+                    keyboard = {
+                        'inline_keyboard': [
+                            [
+                                {'text': '✏️ Редактировать', 'callback_data': f"edit_order_sender_{order['id']}"}
+                            ],
+                            [
+                                {'text': '🗑️ Удалить', 'callback_data': f"delete_order_sender_{order['id']}"}
+                            ]
+                        ]
+                    }
+                    send_message(chat_id, order_text, keyboard)
             
             if carrier_orders:
-                message_parts.append("\n🚚 <b>Ваши заявки перевозчика:</b>\n")
-                for i, order in enumerate(carrier_orders):
+                send_message(chat_id, "🚚 <b>Ваши заявки перевозчика:</b>")
+                for order in carrier_orders:
                     loading = order.get('loading_date', '-')
                     arrival = order.get('arrival_date', '-')
-                    message_parts.append(
-                        f"#{order['id']} - {order.get('marketplace', '-')} → {order.get('warehouse', '-')} ({loading} - {arrival})\n"
-                    )
-                    keyboard_buttons.append([
-                        {
-                            'text': f"✏️ Редактировать",
-                            'callback_data': f"edit_order_carrier_{order['id']}"
-                        }
-                    ])
-                    keyboard_buttons.append([
-                        {
-                            'text': f"🗑️ Удалить",
-                            'callback_data': f"delete_order_carrier_{order['id']}"
-                        }
-                    ])
-                    
-                    if i < len(carrier_orders) - 1:
-                        keyboard_buttons.append([{'text': '—————————', 'callback_data': 'ignore'}])
-            
-            send_message(
-                chat_id,
-                ''.join(message_parts),
-                {'inline_keyboard': keyboard_buttons} if keyboard_buttons else None
-            )
+                    order_text = f"#{order['id']} - {order.get('marketplace', '-')} → {order.get('warehouse', '-')} ({loading} - {arrival})"
+                    keyboard = {
+                        'inline_keyboard': [
+                            [
+                                {'text': '✏️ Редактировать', 'callback_data': f"edit_order_carrier_{order['id']}"}
+                            ],
+                            [
+                                {'text': '🗑️ Удалить', 'callback_data': f"delete_order_carrier_{order['id']}"}
+                            ]
+                        ]
+                    }
+                    send_message(chat_id, order_text, keyboard)
     finally:
         conn.close()
 
