@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 import time
 from collections import defaultdict
 import ipaddress
+import re
+import html
 
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -32,7 +34,7 @@ user_states: Dict[int, Dict[str, Any]] = {}
 admin_sessions: Dict[int, int] = {}
 request_counts: Dict[int, list] = defaultdict(list)
 SESSION_TIMEOUT = 6 * 60 * 60
-ADMIN_SESSION_TIMEOUT = 24 * 60 * 60
+ADMIN_SESSION_TIMEOUT = 2 * 60 * 60
 MAX_REQUESTS_PER_MINUTE = 20
 MAX_TEXT_LENGTH = 500
 MAX_ORDERS_PER_DAY = 10
@@ -67,7 +69,7 @@ def normalize_warehouse(warehouse: str) -> str:
 
 def is_telegram_request(ip: str) -> bool:
     if not ip:
-        return True
+        return False
     try:
         ip_addr = ipaddress.ip_address(ip)
         for cidr in TELEGRAM_IPS:
@@ -75,7 +77,7 @@ def is_telegram_request(ip: str) -> bool:
                 return True
         return False
     except:
-        return True
+        return False
 
 
 def is_rate_limited(chat_id: int) -> bool:
@@ -94,6 +96,47 @@ def is_rate_limited(chat_id: int) -> bool:
 
 def validate_text_length(text: str, max_length: int = MAX_TEXT_LENGTH) -> bool:
     return len(text) <= max_length
+
+
+def validate_phone(phone: str) -> bool:
+    """Валидация формата телефона"""
+    if not phone:
+        return False
+    cleaned = phone.strip().replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+    pattern = r'^\+?[0-9]{10,15}$'
+    return bool(re.match(pattern, cleaned))
+
+
+def sanitize_html(text: str) -> str:
+    """Экранирование HTML символов для безопасного отображения"""
+    return html.escape(str(text))
+
+
+def validate_number_range(value: int, min_val: int, max_val: int, field_name: str) -> tuple[bool, str]:
+    """Валидация числового значения в диапазоне"""
+    if value < min_val or value > max_val:
+        return False, f"❌ {field_name} должно быть от {min_val} до {max_val}"
+    return True, ""
+
+
+def validate_date_not_past(date_str: str) -> tuple[bool, str]:
+    """Проверка что дата не в прошлом"""
+    try:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        if date_obj < today:
+            return False, "❌ Нельзя указывать прошедшую дату"
+        return True, ""
+    except:
+        return False, "❌ Неверный формат даты"
+
+
+def mask_chat_id(chat_id: int) -> str:
+    """Маскирует Chat ID для безопасности (показывает первые 3 и последние 3 цифры)"""
+    chat_id_str = str(chat_id)
+    if len(chat_id_str) <= 6:
+        return chat_id_str
+    return f"{chat_id_str[:3]}{'*' * (len(chat_id_str) - 6)}{chat_id_str[-3:]}"
 
 
 def log_security_event(chat_id: int, event_type: str, details: str, severity: str = 'medium'):
@@ -152,8 +195,8 @@ def notify_admin_about_block(chat_id: int, reason: str):
             message = f"""
 🚨 <b>Автоматическая блокировка пользователя</b>
 
-👤 Chat ID: <code>{chat_id}</code>
-📋 Причина: {reason}
+👤 Chat ID: <code>{mask_chat_id(chat_id)}</code>
+📋 Причина: {sanitize_html(reason)}
 ⏰ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}
 
 Проверьте логи в админ-панели.
@@ -380,6 +423,23 @@ def delete_template(chat_id: int, template_id: int) -> bool:
         conn.close()
 
 
+def delete_user_data(chat_id: int):
+    """Удалить все персональные данные пользователя (GDPR)"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE chat_id = %s", (chat_id,))
+            cur.execute("DELETE FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE chat_id = %s", (chat_id,))
+            cur.execute("DELETE FROM t_p52349012_telegram_bot_creatio.order_templates WHERE chat_id = %s", (chat_id,))
+            cur.execute("DELETE FROM t_p52349012_telegram_bot_creatio.user_subscriptions WHERE chat_id = %s", (chat_id,))
+            conn.commit()
+            log_security_event(chat_id, 'data_deletion', 'Пользователь удалил свои персональные данные', 'medium')
+    except Exception as e:
+        print(f"[ERROR] delete_user_data failed: {str(e)}")
+    finally:
+        conn.close()
+
+
 def show_templates_management(chat_id: int):
     """Показать управление шаблонами"""
     templates = get_user_templates(chat_id)
@@ -449,8 +509,6 @@ def show_main_menu(chat_id: int):
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     method: str = event.get('httpMethod', 'POST')
     
-    print(f"Handler called: method={method}, event={json.dumps(event)[:200]}")
-    
     if method == 'OPTIONS':
         return {
             'statusCode': 200,
@@ -482,19 +540,17 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     
     try:
         source_ip = event.get('requestContext', {}).get('identity', {}).get('sourceIp', '')
-        print(f"Request from IP: {source_ip}")
         
-        # Временно отключено для отладки
-        # if not is_telegram_request(source_ip):
-        #     return {
-        #         'statusCode': 403,
-        #         'headers': {'Content-Type': 'application/json'},
-        #         'body': json.dumps({'error': 'Forbidden'}),
-        #         'isBase64Encoded': False
-        #     }
+        if not is_telegram_request(source_ip):
+            log_security_event(0, 'invalid_ip', f'Request from invalid IP: {source_ip}', 'high')
+            return {
+                'statusCode': 403,
+                'headers': {'Content-Type': 'application/json'},
+                'body': json.dumps({'error': 'Forbidden'}),
+                'isBase64Encoded': False
+            }
         
         body_data = json.loads(event.get('body', '{}'))
-        print(f"Body data: {json.dumps(body_data)[:500]}")
         
         if 'callback_query' in body_data:
             callback = body_data['callback_query']
@@ -613,7 +669,7 @@ def send_message(chat_id: int, text: str, reply_markup: Optional[Dict] = None):
     if reply_markup:
         payload['reply_markup'] = json.dumps(reply_markup)
     
-    requests.post(f"{BASE_URL}/sendMessage", json=payload)
+    requests.post(f"{BASE_URL}/sendMessage", json=payload, timeout=10)
 
 
 def send_photo(chat_id: int, photo_url: str, caption: str = ''):
@@ -623,7 +679,7 @@ def send_photo(chat_id: int, photo_url: str, caption: str = ''):
         'caption': caption,
         'parse_mode': 'HTML'
     }
-    requests.post(f"{BASE_URL}/sendPhoto", json=payload)
+    requests.post(f"{BASE_URL}/sendPhoto", json=payload, timeout=10)
 
 
 def send_document(chat_id: int, file_bytes: bytes, filename: str, caption: str = ''):
@@ -633,7 +689,7 @@ def send_document(chat_id: int, file_bytes: bytes, filename: str, caption: str =
         'caption': caption,
         'parse_mode': 'HTML'
     }
-    requests.post(f"{BASE_URL}/sendDocument", files=files, data=data)
+    requests.post(f"{BASE_URL}/sendDocument", files=files, data=data, timeout=10)
 
 
 def send_label_to_user(chat_id: int, order_id: int, order_type: str, label_size: str):
@@ -676,7 +732,7 @@ def edit_message(chat_id: int, message_id: int, text: str, reply_markup: Optiona
     if reply_markup:
         payload['reply_markup'] = json.dumps(reply_markup)
     
-    requests.post(f"{BASE_URL}/editMessageText", json=payload)
+    requests.post(f"{BASE_URL}/editMessageText", json=payload, timeout=10)
 
 
 def delete_message(chat_id: int, message_id: int):
@@ -684,7 +740,7 @@ def delete_message(chat_id: int, message_id: int):
         'chat_id': chat_id,
         'message_id': message_id
     }
-    requests.post(f"{BASE_URL}/deleteMessage", json=payload)
+    requests.post(f"{BASE_URL}/deleteMessage", json=payload, timeout=10)
 
 
 def process_callback(chat_id: int, callback_data: str, message_id: int):
@@ -1141,6 +1197,22 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         )
         return
     
+    if text == '/delete_my_data':
+        send_message(
+            chat_id,
+            "⚠️ <b>Удаление персональных данных</b>\n\n"
+            "Вы уверены, что хотите удалить все свои персональные данные?\n\n"
+            "❗️ Это действие:\n"
+            "• Удалит все ваши заявки (отправителя и перевозчика)\n"
+            "• Удалит все ваши шаблоны\n"
+            "• Удалит подписки на уведомления\n"
+            "• Невозможно отменить\n\n"
+            "Для подтверждения отправьте: <b>УДАЛИТЬ МОИ ДАННЫЕ</b>",
+            {'remove_keyboard': True}
+        )
+        user_states[chat_id] = {'step': 'confirm_data_deletion', 'data': {}, 'last_activity': time.time()}
+        return
+    
     if text == '/start':
         user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
         
@@ -1189,6 +1261,26 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
     state['last_activity'] = time.time()
     step = state['step']
     data = state['data']
+    
+    if step == 'confirm_data_deletion':
+        if text.strip() == 'УДАЛИТЬ МОИ ДАННЫЕ':
+            delete_user_data(chat_id)
+            del user_states[chat_id]
+            send_message(
+                chat_id,
+                "✅ <b>Данные удалены</b>\n\n"
+                "Все ваши персональные данные успешно удалены из системы.\n\n"
+                "Для продолжения работы введите /start",
+                {'remove_keyboard': True}
+            )
+        else:
+            send_message(
+                chat_id,
+                "❌ Удаление отменено\n\n"
+                "Для подтверждения нужно точно написать: <b>УДАЛИТЬ МОИ ДАННЫЕ</b>",
+                {'remove_keyboard': True}
+            )
+        return
     
     if step == 'add_admin_chat_id':
         if not text.isdigit():
@@ -1430,6 +1522,12 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             else:
                 loading_date = datetime.strptime(text, '%d.%m.%Y')
             
+            is_valid, error_msg = validate_date_not_past(loading_date.strftime('%Y-%m-%d'))
+            if not is_valid:
+                send_message(chat_id, error_msg)
+                log_security_event(chat_id, 'past_date_attempt', f'Attempted past date: {text}', 'low')
+                return
+            
             data['loading_date'] = loading_date.strftime('%Y-%m-%d')
             
             days_until = (loading_date - datetime.now()).days
@@ -1488,6 +1586,12 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             else:
                 delivery_date = datetime.strptime(text, '%d.%m.%Y')
             
+            is_valid, error_msg = validate_date_not_past(delivery_date.strftime('%Y-%m-%d'))
+            if not is_valid:
+                send_message(chat_id, error_msg)
+                log_security_event(chat_id, 'past_date_attempt', f'Attempted past date: {text}', 'low')
+                return
+            
             data['delivery_date'] = delivery_date.strftime('%Y-%m-%d')
             state['step'] = 'sender_pallet_quantity'
             send_message(chat_id, "📦 <b>Укажите количество паллет</b>\n\nНапример: 5\nИли 0, если нет паллет", {'remove_keyboard': True})
@@ -1500,7 +1604,17 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         send_message(chat_id, "📦 <b>Укажите количество коробок</b>\n\nНапример: 10\nИли 0, если нет коробок")
     
     elif step == 'sender_box_quantity':
-        data['box_quantity'] = int(text) if text.isdigit() else 0
+        if not text.isdigit():
+            send_message(chat_id, "❌ Введите целое число")
+            return
+        
+        value = int(text)
+        is_valid, error_msg = validate_number_range(value, 0, 1000, "Количество коробок")
+        if not is_valid:
+            send_message(chat_id, error_msg)
+            return
+        
+        data['box_quantity'] = value
         state['step'] = 'sender_name'
         send_message(chat_id, "👤 <b>Укажите ФИО отправителя</b>\n\nНапример: Иванов Иван Иванович")
     
@@ -1515,18 +1629,31 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             phone = '+7' + phone[1:]
         elif not phone.startswith('+'):
             phone = '+7' + phone
+        
+        if not validate_phone(phone):
+            send_message(chat_id, "❌ Неверный формат телефона\n\n📞 Введите номер в формате:\n+79991234567 или 89991234567")
+            log_security_event(chat_id, 'invalid_phone', f'Invalid phone format: {text}', 'low')
+            return
+        
         data['phone'] = phone
         state['step'] = 'sender_rate'
         send_message(chat_id, "💵 <b>Укажите желаемую ставку в рублях</b>\n\nНапример: 5000", {'remove_keyboard': True})
     
     elif step == 'sender_rate':
-        if text.isdigit():
-            data['rate'] = int(text)
-            data['label_size'] = '120x75'
-            state['step'] = 'show_preview'
-            show_preview(chat_id, data)
-        else:
-            send_message(chat_id, "❌ Неверный формат. Укажите цифру. Например: 5000")
+        if not text.isdigit():
+            send_message(chat_id, "❌ Введите целое число. Например: 5000")
+            return
+        
+        value = int(text)
+        is_valid, error_msg = validate_number_range(value, 500, 500000, "Ставка")
+        if not is_valid:
+            send_message(chat_id, error_msg)
+            return
+        
+        data['rate'] = value
+        data['label_size'] = '120x75'
+        state['step'] = 'show_preview'
+        show_preview(chat_id, data)
     
 
     
@@ -1554,12 +1681,32 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         send_message(chat_id, "📦 <b>Укажите вместимость паллет</b>\n\nНапример: 10\nИли 0, если не перевозите паллеты")
     
     elif step == 'carrier_pallet_capacity':
-        data['pallet_capacity'] = int(text) if text.isdigit() else 0
+        if not text.isdigit():
+            send_message(chat_id, "❌ Введите целое число")
+            return
+        
+        value = int(text)
+        is_valid, error_msg = validate_number_range(value, 0, 33, "Вместимость паллет")
+        if not is_valid:
+            send_message(chat_id, error_msg)
+            return
+        
+        data['pallet_capacity'] = value
         state['step'] = 'carrier_box_capacity'
         send_message(chat_id, "📦 <b>Укажите вместимость коробок</b>\n\nНапример: 50\nИли 0, если не перевозите коробки")
     
     elif step == 'carrier_box_capacity':
-        data['box_capacity'] = int(text) if text.isdigit() else 0
+        if not text.isdigit():
+            send_message(chat_id, "❌ Введите целое число")
+            return
+        
+        value = int(text)
+        is_valid, error_msg = validate_number_range(value, 0, 2000, "Вместимость коробок")
+        if not is_valid:
+            send_message(chat_id, error_msg)
+            return
+        
+        data['box_capacity'] = value
         state['step'] = 'carrier_driver_name'
         send_message(chat_id, "👤 <b>Укажите ФИО водителя</b>\n\nНапример: Петров Петр Петрович")
     
@@ -1574,6 +1721,12 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             phone = '+7' + phone[1:]
         elif not phone.startswith('+'):
             phone = '+7' + phone
+        
+        if not validate_phone(phone):
+            send_message(chat_id, "❌ Неверный формат телефона\n\n📞 Введите номер в формате:\n+79991234567 или 89991234567")
+            log_security_event(chat_id, 'invalid_phone', f'Invalid phone format: {text}', 'low')
+            return
+        
         data['phone'] = phone
         state['step'] = 'carrier_hydroboard'
         send_message(
@@ -1620,6 +1773,12 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
                 text_cleaned = text_cleaned.split('(')[-1].replace(')', '').strip() if '(' in text_cleaned else text_cleaned
                 loading_date = datetime.strptime(text_cleaned, '%d.%m.%Y')
             
+            is_valid, error_msg = validate_date_not_past(loading_date.strftime('%Y-%m-%d'))
+            if not is_valid:
+                send_message(chat_id, error_msg)
+                log_security_event(chat_id, 'past_date_attempt', f'Attempted past date: {text}', 'low')
+                return
+            
             data['loading_date'] = loading_date.strftime('%Y-%m-%d')
             state['step'] = 'carrier_arrival_date'
             
@@ -1651,6 +1810,12 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
                 text_cleaned = text.replace('🔴', '').replace('🟢', '').strip()
                 text_cleaned = text_cleaned.split('(')[-1].replace(')', '').strip() if '(' in text_cleaned else text_cleaned
                 arrival_date = datetime.strptime(text_cleaned, '%d.%m.%Y')
+            
+            is_valid, error_msg = validate_date_not_past(arrival_date.strftime('%Y-%m-%d'))
+            if not is_valid:
+                send_message(chat_id, error_msg)
+                log_security_event(chat_id, 'past_date_attempt', f'Attempted past date: {text}', 'low')
+                return
             
             data['arrival_date'] = arrival_date.strftime('%Y-%m-%d')
             state['step'] = 'show_preview'
@@ -1699,16 +1864,16 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
     if data['type'] == 'sender':
         preview_text = (
             "📋 <b>ПРЕВЬЮ ЗАЯВКИ ОТПРАВИТЕЛЯ</b>\n\n"
-            f"🏪 Маркетплейс: {data.get('marketplace', '-')}\n"
-            f"📍 Склад: {data.get('warehouse', '-')}\n"
-            f"🏠 Адрес ПОГРУЗКИ: {data.get('loading_address', '-')}\n"
+            f"🏪 Маркетплейс: {sanitize_html(data.get('marketplace', '-'))}\n"
+            f"📍 Склад: {sanitize_html(data.get('warehouse', '-'))}\n"
+            f"🏠 Адрес ПОГРУЗКИ: {sanitize_html(data.get('loading_address', '-'))}\n"
             f"📅 Дата ПОГРУЗКИ: {data.get('loading_date', '-')}\n"
             f"🕐 Время ПОГРУЗКИ: {data.get('loading_time', '-')}\n"
             f"📅 Дата ПОСТАВКИ: {data.get('delivery_date', '-')}\n"
             f"📦 Паллеты: {data.get('pallet_quantity', 0)}\n"
             f"📦 Коробки: {data.get('box_quantity', 0)}\n"
-            f"👤 Отправитель: {data.get('sender_name', '-')}\n"
-            f"📱 Телефон: {data.get('phone', '-')}\n"
+            f"👤 Отправитель: {sanitize_html(data.get('sender_name', '-'))}\n"
+            f"📱 Телефон: {sanitize_html(data.get('phone', '-'))}\n"
             f"💵 Ставка: {data.get('rate', '-')} руб.\n"
             f"🏷️ Термоэтикетка: {data.get('label_size', '-')}"
         )
@@ -1752,16 +1917,16 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
     else:
         preview_text = (
             "📋 <b>ПРЕВЬЮ ЗАЯВКИ ПЕРЕВОЗЧИКА</b>\n\n"
-            f"🏪 Маркетплейс: {data.get('marketplace', '-')}\n"
-            f"📍 Склад: {data.get('warehouse', '-')}\n"
-            f"🚗 Марка: {data.get('car_brand', '-')}\n"
-            f"🚗 Модель: {data.get('car_model', '-')}\n"
-            f"🔢 Гос. номер: {data.get('license_plate', '-')}\n"
+            f"🏪 Маркетплейс: {sanitize_html(data.get('marketplace', '-'))}\n"
+            f"📍 Склад: {sanitize_html(data.get('warehouse', '-'))}\n"
+            f"🚗 Марка: {sanitize_html(data.get('car_brand', '-'))}\n"
+            f"🚗 Модель: {sanitize_html(data.get('car_model', '-'))}\n"
+            f"🔢 Гос. номер: {sanitize_html(data.get('license_plate', '-'))}\n"
             f"📦 Вместимость паллет: {data.get('pallet_capacity', 0)}\n"
             f"📦 Вместимость коробок: {data.get('box_capacity', 0)}\n"
-            f"🚚 Гидроборт: {data.get('hydroboard', '-')}\n"
-            f"👤 Водитель: {data.get('driver_name', '-')}\n"
-            f"📱 Телефон: {data.get('phone', '-')}\n"
+            f"🚚 Гидроборт: {sanitize_html(data.get('hydroboard', '-'))}\n"
+            f"👤 Водитель: {sanitize_html(data.get('driver_name', '-'))}\n"
+            f"📱 Телефон: {sanitize_html(data.get('phone', '-'))}\n"
             f"📅 Дата ПОГРУЗКИ: {data.get('loading_date', '-')}\n"
             f"📅 Дата прибытия: {data.get('arrival_date', '-')}"
         )
@@ -1809,7 +1974,6 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
 
 def save_sender_order(chat_id: int, data: Dict[str, Any]):
     try:
-        print(f"[DEBUG] save_sender_order called for chat_id={chat_id}, data={data}")
         edit_mode = data.get('edit_mode', False)
         original_order_id = data.get('original_order_id')
         
@@ -1821,7 +1985,6 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
         if not edit_mode:
             user_limit = get_user_daily_limit(chat_id)
             orders_today = get_user_orders_today(chat_id)
-            print(f"[DEBUG] user_limit={user_limit}, orders_today={orders_today}")
         
             if orders_today >= user_limit:
                 log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
@@ -1832,7 +1995,6 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                 )
                 return
         
-        print("[DEBUG] Connecting to database...")
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
         
         try:
@@ -1856,7 +2018,6 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                     return "'" + str(value).replace("'", "''") + "'"
                 
                 if edit_mode and original_order_id:
-                    print(f"[DEBUG] Executing UPDATE query for order_id={original_order_id}...")
                     query = f"""
                         UPDATE t_p52349012_telegram_bot_creatio.sender_orders
                         SET loading_address = {escape_sql(data.get('loading_address'))},
@@ -1877,7 +2038,6 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                     """
                     order_id = original_order_id
                 else:
-                    print(f"[DEBUG] Executing INSERT query...")
                     query = f"""
                         INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
                         (loading_address, warehouse, cargo_type, sender_name, phone, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, label_size, marketplace, chat_id, rate, warehouse_normalized)
@@ -1885,21 +2045,16 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                         RETURNING id
                     """
                 
-                print(f"[DEBUG] Query: {query}")
                 cur.execute(query)
                 
                 if not edit_mode:
-                    print("[DEBUG] Fetching order_id...")
                     result = cur.fetchone()
-                    print(f"[DEBUG] fetchone result: {result}, type: {type(result)}")
                     
                     if result is None:
                         raise Exception("INSERT query returned no result")
                     
                     order_id = result['id'] if isinstance(result, dict) else result[0]
-                print(f"[DEBUG] Extracted order_id={order_id}")
                 conn.commit()
-                print(f"[DEBUG] Order {'updated' if edit_mode else 'created'} with id={order_id}")
                 
                 if edit_mode:
                     send_message(
@@ -1955,7 +2110,6 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
         if not edit_mode:
             user_limit = get_user_daily_limit(chat_id)
             orders_today = get_user_orders_today(chat_id)
-            print(f"[DEBUG] user_limit={user_limit}, orders_today={orders_today}")
         
             if orders_today >= user_limit:
                 log_security_event(chat_id, 'order_limit_exceeded', f'Попытка создать {orders_today + 1} заявку при лимите {user_limit}', 'medium')
@@ -1966,7 +2120,6 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                 )
                 return
         
-        print("[DEBUG] Connecting to database...")
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
         
         try:
@@ -1987,7 +2140,6 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                     return "'" + str(value).replace("'", "''") + "'"
                 
                 if edit_mode and original_order_id:
-                    print(f"[DEBUG] Executing UPDATE query for order_id={original_order_id}...")
                     query = f"""
                         UPDATE t_p52349012_telegram_bot_creatio.carrier_orders
                         SET car_brand = {escape_sql(data.get('car_brand'))},
@@ -2009,7 +2161,6 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                     """
                     order_id = original_order_id
                 else:
-                    print(f"[DEBUG] Executing INSERT query...")
                     query = f"""
                         INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
                         (car_brand, license_plate, capacity_type, driver_name, phone, warehouse, car_model, pallet_capacity, box_capacity, marketplace, loading_date, arrival_date, hydroboard, chat_id, warehouse_normalized)
@@ -2017,21 +2168,16 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                         RETURNING id
                     """
                 
-                print(f"[DEBUG] Query: {query}")
                 cur.execute(query)
                 
                 if not edit_mode:
-                    print("[DEBUG] Fetching order_id...")
                     result = cur.fetchone()
-                    print(f"[DEBUG] fetchone result: {result}, type: {type(result)}")
                     
                     if result is None:
                         raise Exception("INSERT query returned no result")
                     
                     order_id = result['id'] if isinstance(result, dict) else result[0]
-                print(f"[DEBUG] Extracted order_id={order_id}")
                 conn.commit()
-                print(f"[DEBUG] Order {'updated' if edit_mode else 'created'} with id={order_id}")
                 
                 if edit_mode:
                     send_message(
@@ -2397,25 +2543,25 @@ def notify_about_new_order(order_id: int, order_type: str, data: Dict[str, Any])
             if order_type == 'sender':
                 message = (
                     f"🆕 <b>Новая заявка отправителя #{order_id}</b>\n\n"
-                    f"🏪 Маркетплейс: {data.get('marketplace', '-')}\n"
-                    f"📍 Склад: {data.get('warehouse')}\n"
-                    f"🏠 Адрес: {data.get('loading_address')}\n"
+                    f"🏪 Маркетплейс: {sanitize_html(data.get('marketplace', '-'))}\n"
+                    f"📍 Склад: {sanitize_html(data.get('warehouse'))}\n"
+                    f"🏠 Адрес: {sanitize_html(data.get('loading_address'))}\n"
                     f"📅 Дата: {data.get('loading_date')} {data.get('loading_time')}\n"
                     f"📦 Паллеты: {data.get('pallet_quantity', 0)}\n"
                     f"📦 Коробки: {data.get('box_quantity', 0)}\n"
-                    f"👤 Отправитель: {data.get('sender_name')}\n"
-                    f"📱 Телефон: {data.get('phone')}"
+                    f"👤 Отправитель: {sanitize_html(data.get('sender_name'))}\n"
+                    f"📱 Телефон: {sanitize_html(data.get('phone'))}"
                 )
             else:
                 message = (
                     f"🆕 <b>Новая заявка перевозчика #{order_id}</b>\n\n"
-                    f"🏪 Маркетплейс: {data.get('marketplace', '-')}\n"
-                    f"📍 Склад: {data.get('warehouse')}\n"
-                    f"🚗 Авто: {data.get('car_brand')} {data.get('car_model')}\n"
-                    f"🔢 Номер: {data.get('license_plate')}\n"
+                    f"🏪 Маркетплейс: {sanitize_html(data.get('marketplace', '-'))}\n"
+                    f"📍 Склад: {sanitize_html(data.get('warehouse'))}\n"
+                    f"🚗 Авто: {sanitize_html(data.get('car_brand'))} {sanitize_html(data.get('car_model'))}\n"
+                    f"🔢 Номер: {sanitize_html(data.get('license_plate'))}\n"
                     f"📦 Вместимость: {data.get('pallet_capacity', 0)} паллет, {data.get('box_capacity', 0)} коробок\n"
-                    f"👤 Водитель: {data.get('driver_name')}\n"
-                    f"📱 Телефон: {data.get('phone')}\n"
+                    f"👤 Водитель: {sanitize_html(data.get('driver_name'))}\n"
+                    f"📱 Телефон: {sanitize_html(data.get('phone'))}\n"
                     f"📅 Погрузка: {data.get('loading_date', '-')}\n"
                     f"📅 Прибытие: {data.get('arrival_date', '-')}"
                 )
@@ -2545,24 +2691,24 @@ def send_notifications_to_subscribers(order_id: int, order_type: str, data: Dict
             if order_type == 'sender':
                 message = (
                     f"🆕 <b>Новая заявка отправителя #{order_id}</b>\n\n"
-                    f"🏪 Маркетплейс: {data.get('marketplace', '-')}\n"
-                    f"📍 Склад: {data.get('warehouse')}\n"
+                    f"🏪 Маркетплейс: {sanitize_html(data.get('marketplace', '-'))}\n"
+                    f"📍 Склад: {sanitize_html(data.get('warehouse'))}\n"
                     f"📅 Дата: {data.get('loading_date')} {data.get('loading_time')}\n"
                     f"📦 Груз: {data.get('pallet_quantity', 0)} паллет, {data.get('box_quantity', 0)} коробок\n"
                     f"💵 Ставка: {data.get('rate', '-')} руб.\n"
-                    f"👤 Отправитель: {data.get('sender_name')}\n"
-                    f"📱 Телефон: {data.get('phone')}"
+                    f"👤 Отправитель: {sanitize_html(data.get('sender_name'))}\n"
+                    f"📱 Телефон: {sanitize_html(data.get('phone'))}"
                 )
             else:
                 message = (
                     f"🆕 <b>Новая заявка перевозчика #{order_id}</b>\n\n"
-                    f"🏪 Маркетплейс: {data.get('marketplace', '-')}\n"
-                    f"📍 Склад: {data.get('warehouse')}\n"
-                    f"🚗 Авто: {data.get('car_brand')} {data.get('car_model')}\n"
+                    f"🏪 Маркетплейс: {sanitize_html(data.get('marketplace', '-'))}\n"
+                    f"📍 Склад: {sanitize_html(data.get('warehouse'))}\n"
+                    f"🚗 Авто: {sanitize_html(data.get('car_brand'))} {sanitize_html(data.get('car_model'))}\n"
                     f"📦 Вместимость: {data.get('pallet_capacity', 0)} паллет, {data.get('box_capacity', 0)} коробок\n"
-                    f"🚚 Гидроборт: {data.get('hydroboard', '-')}\n"
-                    f"👤 Водитель: {data.get('driver_name')}\n"
-                    f"📱 Телефон: {data.get('phone')}"
+                    f"🚚 Гидроборт: {sanitize_html(data.get('hydroboard', '-'))}\n"
+                    f"👤 Водитель: {sanitize_html(data.get('driver_name'))}\n"
+                    f"📱 Телефон: {sanitize_html(data.get('phone'))}"
                 )
             
             for subscriber in subscribers:
