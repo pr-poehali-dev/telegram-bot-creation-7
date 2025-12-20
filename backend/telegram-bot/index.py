@@ -2763,14 +2763,14 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                     AND (warehouse_normalized = %s OR warehouse = %s)
                     AND marketplace = %s
                     AND (
-                        (pallet_capacity >= %s AND %s > 0) OR
-                        (pallet_capacity = 0 AND %s = 0 AND box_capacity >= %s)
+                        (pallet_capacity >= %s) OR
+                        (pallet_capacity = 0 AND box_capacity >= %s)
                     )
                     ORDER BY id DESC
                     LIMIT 5
                     """,
                     (delivery_date, warehouse_norm, warehouse, marketplace, 
-                     sender_pallet_qty, sender_pallet_qty, sender_pallet_qty, sender_box_qty)
+                     sender_pallet_qty, sender_box_qty)
                 )
                 
                 matches = cur.fetchall()
@@ -2803,12 +2803,16 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                         carrier_pallet_cap = match.get('pallet_capacity', 0)
                         carrier_box_cap = match.get('box_capacity', 0)
                         
-                        # Проверяем соответствие вместимости перевозчика грузу отправителя
+                        # Проверка: груз должен помещаться в машину
                         is_match = False
-                        if sender_pallet_qty > 0 and carrier_pallet_cap >= sender_pallet_qty:
-                            is_match = True
-                        elif sender_pallet_qty == 0 and carrier_pallet_cap == 0 and carrier_box_cap >= sender_box_qty:
-                            is_match = True
+                        if sender_pallet_qty > 0:
+                            # Есть паллеты - нужна вместимость по паллетам
+                            if carrier_pallet_cap >= sender_pallet_qty:
+                                is_match = True
+                        else:
+                            # Только коробки - подойдет любая машина с достаточной вместимостью коробок
+                            if carrier_pallet_cap > 0 or carrier_box_cap >= sender_box_qty:
+                                is_match = True
                         
                         if carrier_chat_id and is_match:
                             carrier_message = (
@@ -2850,8 +2854,8 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                     AND (warehouse_normalized = %s OR warehouse = %s)
                     AND marketplace = %s
                     AND (
-                        (%s >= pallet_quantity AND pallet_quantity > 0) OR
-                        (%s = 0 AND pallet_quantity = 0 AND %s >= box_quantity)
+                        (%s >= pallet_quantity) OR
+                        (%s = 0 AND %s >= box_quantity)
                     )
                     ORDER BY id DESC
                     LIMIT 5
@@ -2890,12 +2894,16 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                         sender_pallet_qty = match.get('pallet_quantity', 0)
                         sender_box_qty = match.get('box_quantity', 0)
                         
-                        # Проверяем соответствие вместимости перевозчика грузу отправителя
+                        # Проверка: груз должен помещаться в машину
                         is_match = False
-                        if sender_pallet_qty > 0 and carrier_pallet_cap >= sender_pallet_qty:
-                            is_match = True
-                        elif sender_pallet_qty == 0 and carrier_pallet_cap == 0 and carrier_box_cap >= sender_box_qty:
-                            is_match = True
+                        if sender_pallet_qty > 0:
+                            # Есть паллеты - нужна вместимость по паллетам
+                            if carrier_pallet_cap >= sender_pallet_qty:
+                                is_match = True
+                        else:
+                            # Только коробки - подойдет любая машина с достаточной вместимостью
+                            if carrier_pallet_cap > 0 or carrier_box_cap >= sender_box_qty:
+                                is_match = True
                         
                         if sender_chat_id and is_match:
                             sender_message = (
