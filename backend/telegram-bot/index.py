@@ -73,6 +73,36 @@ def normalize_warehouse(warehouse: str) -> str:
     normalized = ''.join(c for c in normalized if c.isalnum() or c.isspace())
     return normalized
 
+def normalize_city(city: str) -> str:
+    if not city:
+        return ''
+    normalized = city.lower().strip()
+    normalized = normalized.replace('г.', '').replace('город', '').strip()
+    normalized = ' '.join(normalized.split())
+    replacements = {
+        'москва': 'москва',
+        'санкт-петербург': 'санктпетербург',
+        'санкт петербург': 'санктпетербург',
+        'спб': 'санктпетербург',
+        'питер': 'санктпетербург',
+        'петербург': 'санктпетербург',
+        'нижний новгород': 'нижнийновгород',
+        'н новгород': 'нижнийновгород',
+        'екатеринбург': 'екатеринбург',
+        'самара': 'самара',
+        'казань': 'казань',
+        'ростов-на-дону': 'ростовнадону',
+        'ростов': 'ростовнадону',
+        'е': 'е',
+        'ё': 'е'
+    }
+    for wrong, correct in replacements.items():
+        if normalized == wrong or normalized.startswith(wrong + ' '):
+            normalized = correct
+            break
+    normalized = ''.join(c for c in normalized if c.isalnum())
+    return normalized
+
 def log_security_event(chat_id: int, event_type: str, details: str, severity: str = 'medium'):
     try:
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
@@ -809,6 +839,7 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         field_names = {
             'marketplace': 'маркетплейс',
             'warehouse': 'склад назначения',
+            'loading_city': 'город погрузки',
             'loading_address': 'адрес погрузки',
             'loading_date': 'дату погрузки (ДД.ММ.ГГГГ)',
             'loading_time': 'время погрузки',
@@ -1495,8 +1526,13 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
     
     elif step == 'sender_warehouse':
         data['warehouse'] = text
+        state['step'] = 'sender_loading_city'
+        send_message(chat_id, "🏙 <b>Укажите город или населенный пункт погрузки</b>\n\nНапример: Москва, Санкт-Петербург, Самара", {'remove_keyboard': True})
+    
+    elif step == 'sender_loading_city':
+        data['loading_city'] = text
         state['step'] = 'sender_loading_address'
-        send_message(chat_id, "🏠 <b>Укажите адрес ПОГРУЗКИ</b>\n\nНапример: г. Москва, ул. Ленина, д. 10")
+        send_message(chat_id, "🏠 <b>Укажите адрес ПОГРУЗКИ</b>\n\nНапример: ул. Ленина, д. 10")
     
     elif step == 'sender_loading_address':
         data['loading_address'] = text
@@ -1752,6 +1788,26 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
     
     elif step == 'carrier_hydroboard':
         data['hydroboard'] = 'Есть' if 'есть' in text.lower() else 'Нету'
+        state['step'] = 'carrier_loading_city'
+        
+        send_message(
+            chat_id,
+            "🏙 <b>Укажите город или населенный пункт погрузки</b>",
+            {
+                'keyboard': [
+                    [{'text': '🌐 Любой город'}]
+                ],
+                'resize_keyboard': True,
+                'one_time_keyboard': True
+            }
+        )
+    
+    elif step == 'carrier_loading_city':
+        if '🌐' in text or 'любой' in text.lower():
+            data['loading_city'] = 'Любой город'
+        else:
+            data['loading_city'] = text
+        
         state['step'] = 'carrier_loading_date'
         
         today = datetime.now()
@@ -1874,6 +1930,7 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
             "📋 <b>ПРЕВЬЮ ЗАЯВКИ ОТПРАВИТЕЛЯ</b>\n\n"
             f"🏪 Маркетплейс: {sanitize_html(data.get('marketplace', '-'))}\n"
             f"📍 Склад: {sanitize_html(data.get('warehouse', '-'))}\n"
+            f"🏙 Город погрузки: {sanitize_html(data.get('loading_city', '-'))}\n"
             f"🏠 Адрес ПОГРУЗКИ: {sanitize_html(data.get('loading_address', '-'))}\n"
             f"📅 Дата ПОГРУЗКИ: {data.get('loading_date', '-')}\n"
             f"🕐 Время ПОГРУЗКИ: {data.get('loading_time', '-')}\n"
@@ -1893,12 +1950,16 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
                     {'text': '✏️ Склад', 'callback_data': 'edit_warehouse'}
                 ],
                 [
-                    {'text': '✏️ Адрес', 'callback_data': 'edit_loading_address'},
-                    {'text': '✏️ Дата погрузки', 'callback_data': 'edit_loading_date'}
+                    {'text': '✏️ Город', 'callback_data': 'edit_loading_city'},
+                    {'text': '✏️ Адрес', 'callback_data': 'edit_loading_address'}
                 ],
                 [
-                    {'text': '✏️ Время', 'callback_data': 'edit_loading_time'},
-                    {'text': '✏️ Дата ПОСТАВКИ', 'callback_data': 'edit_delivery_date'}
+                    {'text': '✏️ Дата погрузки', 'callback_data': 'edit_loading_date'},
+                    {'text': '✏️ Время', 'callback_data': 'edit_loading_time'}
+                ],
+                [
+                    {'text': '✏️ Дата ПОСТАВКИ', 'callback_data': 'edit_delivery_date'},
+                    {'text': '✏️ Ставка', 'callback_data': 'edit_rate'}
                 ],
                 [
                     {'text': '✏️ Паллеты', 'callback_data': 'edit_pallet_quantity'},
@@ -1907,9 +1968,6 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
                 [
                     {'text': '✏️ ФИО', 'callback_data': 'edit_sender_name'},
                     {'text': '✏️ Телефон', 'callback_data': 'edit_phone'}
-                ],
-                [
-                    {'text': '✏️ Ставка', 'callback_data': 'edit_rate'}
                 ],
                 [
                     {'text': '💾 Сохранить как шаблон', 'callback_data': 'save_as_template'}
@@ -1927,6 +1985,7 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
             "📋 <b>ПРЕВЬЮ ЗАЯВКИ ПЕРЕВОЗЧИКА</b>\n\n"
             f"🏪 Маркетплейс: {sanitize_html(data.get('marketplace', '-'))}\n"
             f"📍 Склад: {sanitize_html(data.get('warehouse', '-'))}\n"
+            f"🏙 Город погрузки: {sanitize_html(data.get('loading_city', '-'))}\n"
             f"🚗 Марка: {sanitize_html(data.get('car_brand', '-'))}\n"
             f"🚗 Модель: {sanitize_html(data.get('car_model', '-'))}\n"
             f"🔢 Гос. номер: {sanitize_html(data.get('license_plate', '-'))}\n"
@@ -1946,23 +2005,26 @@ def show_preview(chat_id: int, data: Dict[str, Any]):
                     {'text': '✏️ Склад', 'callback_data': 'edit_warehouse'}
                 ],
                 [
-                    {'text': '✏️ Марка', 'callback_data': 'edit_car_brand'},
-                    {'text': '✏️ Модель', 'callback_data': 'edit_car_model'}
+                    {'text': '✏️ Город', 'callback_data': 'edit_loading_city'},
+                    {'text': '✏️ Марка', 'callback_data': 'edit_car_brand'}
                 ],
                 [
-                    {'text': '✏️ Номер', 'callback_data': 'edit_license_plate'},
-                    {'text': '✏️ Паллеты', 'callback_data': 'edit_pallet_capacity'}
+                    {'text': '✏️ Модель', 'callback_data': 'edit_car_model'},
+                    {'text': '✏️ Номер', 'callback_data': 'edit_license_plate'}
                 ],
                 [
-                    {'text': '✏️ Коробки', 'callback_data': 'edit_box_capacity'},
-                    {'text': '✏️ Гидроборт', 'callback_data': 'edit_hydroboard'}
+                    {'text': '✏️ Паллеты', 'callback_data': 'edit_pallet_capacity'},
+                    {'text': '✏️ Коробки', 'callback_data': 'edit_box_capacity'}
                 ],
                 [
-                    {'text': '✏️ Водитель', 'callback_data': 'edit_driver_name'},
-                    {'text': '✏️ Телефон', 'callback_data': 'edit_phone'}
+                    {'text': '✏️ Гидроборт', 'callback_data': 'edit_hydroboard'},
+                    {'text': '✏️ Водитель', 'callback_data': 'edit_driver_name'}
                 ],
                 [
-                    {'text': '✏️ Дата ПОГРУЗКИ', 'callback_data': 'edit_loading_date'},
+                    {'text': '✏️ Телефон', 'callback_data': 'edit_phone'},
+                    {'text': '✏️ Дата ПОГРУЗКИ', 'callback_data': 'edit_loading_date'}
+                ],
+                [
                     {'text': '✏️ Дата прибытия', 'callback_data': 'edit_arrival_date'}
                 ],
                 [
@@ -2008,6 +2070,8 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 warehouse_norm = normalize_warehouse(data.get('warehouse', ''))
+                loading_city = data.get('loading_city', '')
+                loading_city_norm = normalize_city(loading_city)
                 
                 # Определяем тип груза на основе количества (только 'pallet' или 'box')
                 pallet_qty = data.get('pallet_quantity', 0)
@@ -2040,7 +2104,9 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                             box_quantity = {data.get('box_quantity', 0)},
                             marketplace = {escape_sql(data.get('marketplace'))},
                             rate = {escape_sql(data.get('rate'))},
-                            warehouse_normalized = {escape_sql(warehouse_norm)}
+                            warehouse_normalized = {escape_sql(warehouse_norm)},
+                            loading_city = {escape_sql(loading_city)},
+                            loading_city_normalized = {escape_sql(loading_city_norm)}
                         WHERE id = {original_order_id} AND chat_id = {chat_id}
                         RETURNING id
                     """
@@ -2048,8 +2114,8 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                 else:
                     query = f"""
                         INSERT INTO t_p52349012_telegram_bot_creatio.sender_orders
-                        (loading_address, warehouse, cargo_type, sender_name, phone, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, label_size, marketplace, chat_id, rate, warehouse_normalized)
-                        VALUES ({escape_sql(data.get('loading_address'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(cargo_type)}, {escape_sql(data.get('sender_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('loading_time'))}, {escape_sql(data.get('delivery_date'))}, {data.get('pallet_quantity', 0)}, {data.get('box_quantity', 0)}, '120x75', {escape_sql(data.get('marketplace'))}, {chat_id}, {escape_sql(data.get('rate'))}, {escape_sql(warehouse_norm)})
+                        (loading_address, warehouse, cargo_type, sender_name, phone, loading_date, loading_time, delivery_date, pallet_quantity, box_quantity, label_size, marketplace, chat_id, rate, warehouse_normalized, loading_city, loading_city_normalized)
+                        VALUES ({escape_sql(data.get('loading_address'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(cargo_type)}, {escape_sql(data.get('sender_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('loading_time'))}, {escape_sql(data.get('delivery_date'))}, {data.get('pallet_quantity', 0)}, {data.get('box_quantity', 0)}, '120x75', {escape_sql(data.get('marketplace'))}, {chat_id}, {escape_sql(data.get('rate'))}, {escape_sql(warehouse_norm)}, {escape_sql(loading_city)}, {escape_sql(loading_city_norm)})
                         RETURNING id
                     """
                 
@@ -2134,6 +2200,8 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 warehouse_norm = normalize_warehouse(data.get('warehouse', ''))
+                loading_city = data.get('loading_city', '')
+                loading_city_norm = normalize_city(loading_city)
                 
                 # Определяем capacity_type на основе количества
                 pallet_cap = data.get('pallet_capacity', 0)
@@ -2164,7 +2232,9 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                             loading_date = {escape_sql(data.get('loading_date'))},
                             arrival_date = {escape_sql(data.get('arrival_date'))},
                             hydroboard = {escape_sql(data.get('hydroboard'))},
-                            warehouse_normalized = {escape_sql(warehouse_norm)}
+                            warehouse_normalized = {escape_sql(warehouse_norm)},
+                            loading_city = {escape_sql(loading_city)},
+                            loading_city_normalized = {escape_sql(loading_city_norm)}
                         WHERE id = {original_order_id} AND chat_id = {chat_id}
                         RETURNING id
                     """
@@ -2172,8 +2242,8 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                 else:
                     query = f"""
                         INSERT INTO t_p52349012_telegram_bot_creatio.carrier_orders
-                        (car_brand, license_plate, capacity_type, driver_name, phone, warehouse, car_model, pallet_capacity, box_capacity, marketplace, loading_date, arrival_date, hydroboard, chat_id, warehouse_normalized)
-                        VALUES ({escape_sql(data.get('car_brand'))}, {escape_sql(data.get('license_plate'))}, {escape_sql(capacity_type)}, {escape_sql(data.get('driver_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(data.get('car_model'))}, {pallet_cap}, {box_cap}, {escape_sql(data.get('marketplace'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('arrival_date'))}, {escape_sql(data.get('hydroboard'))}, {chat_id}, {escape_sql(warehouse_norm)})
+                        (car_brand, license_plate, capacity_type, driver_name, phone, warehouse, car_model, pallet_capacity, box_capacity, marketplace, loading_date, arrival_date, hydroboard, chat_id, warehouse_normalized, loading_city, loading_city_normalized)
+                        VALUES ({escape_sql(data.get('car_brand'))}, {escape_sql(data.get('license_plate'))}, {escape_sql(capacity_type)}, {escape_sql(data.get('driver_name'))}, {escape_sql(data.get('phone'))}, {escape_sql(data.get('warehouse'))}, {escape_sql(data.get('car_model'))}, {pallet_cap}, {box_cap}, {escape_sql(data.get('marketplace'))}, {escape_sql(data.get('loading_date'))}, {escape_sql(data.get('arrival_date'))}, {escape_sql(data.get('hydroboard'))}, {chat_id}, {escape_sql(warehouse_norm)}, {escape_sql(loading_city)}, {escape_sql(loading_city_norm)})
                         RETURNING id
                     """
                 
@@ -2749,19 +2819,23 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                 sender_chat_id = data.get('chat_id')
                 sender_pallet_qty = data.get('pallet_quantity', 0)
                 sender_box_qty = data.get('box_quantity', 0)
+                loading_city = data.get('loading_city', '')
                 
                 if not delivery_date:
                     return
                 
                 warehouse_norm = normalize_warehouse(warehouse)
+                loading_city_norm = normalize_city(loading_city)
+                
                 cur.execute(
                     """
                     SELECT id, phone, driver_name, car_brand, car_model, 
-                           pallet_capacity, box_capacity, loading_date, arrival_date, hydroboard, warehouse, chat_id
+                           pallet_capacity, box_capacity, loading_date, arrival_date, hydroboard, warehouse, chat_id, loading_city
                     FROM t_p52349012_telegram_bot_creatio.carrier_orders
                     WHERE arrival_date = %s
                     AND (warehouse_normalized = %s OR warehouse = %s)
                     AND marketplace = %s
+                    AND (loading_city_normalized = %s OR loading_city = 'Любой город')
                     AND (
                         (pallet_capacity >= %s) OR
                         (pallet_capacity = 0 AND box_capacity >= %s)
@@ -2769,7 +2843,7 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                     ORDER BY id DESC
                     LIMIT 5
                     """,
-                    (delivery_date, warehouse_norm, warehouse, marketplace, 
+                    (delivery_date, warehouse_norm, warehouse, marketplace, loading_city_norm,
                      sender_pallet_qty, sender_box_qty)
                 )
                 
@@ -2840,29 +2914,54 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                 carrier_chat_id = data.get('chat_id')
                 carrier_pallet_cap = data.get('pallet_capacity', 0)
                 carrier_box_cap = data.get('box_capacity', 0)
+                loading_city = data.get('loading_city', '')
                 
                 if not arrival_date:
                     return
                 
                 warehouse_norm = normalize_warehouse(warehouse)
-                cur.execute(
-                    """
-                    SELECT id, phone, sender_name, loading_address, 
-                           pallet_quantity, box_quantity, loading_date, loading_time, delivery_date, rate, warehouse, chat_id
-                    FROM t_p52349012_telegram_bot_creatio.sender_orders
-                    WHERE delivery_date = %s
-                    AND (warehouse_normalized = %s OR warehouse = %s)
-                    AND marketplace = %s
-                    AND (
-                        (%s >= pallet_quantity) OR
-                        (%s = 0 AND %s >= box_quantity)
+                loading_city_norm = normalize_city(loading_city)
+                
+                # Если перевозчик указал "Любой город", ищем всех отправителей
+                if loading_city == 'Любой город':
+                    cur.execute(
+                        """
+                        SELECT id, phone, sender_name, loading_address, loading_city,
+                               pallet_quantity, box_quantity, loading_date, loading_time, delivery_date, rate, warehouse, chat_id
+                        FROM t_p52349012_telegram_bot_creatio.sender_orders
+                        WHERE delivery_date = %s
+                        AND (warehouse_normalized = %s OR warehouse = %s)
+                        AND marketplace = %s
+                        AND (
+                            (%s >= pallet_quantity) OR
+                            (%s = 0 AND %s >= box_quantity)
+                        )
+                        ORDER BY id DESC
+                        LIMIT 5
+                        """,
+                        (arrival_date, warehouse_norm, warehouse, marketplace,
+                         carrier_pallet_cap, carrier_pallet_cap, carrier_box_cap)
                     )
-                    ORDER BY id DESC
-                    LIMIT 5
-                    """,
-                    (arrival_date, warehouse_norm, warehouse, marketplace,
-                     carrier_pallet_cap, carrier_pallet_cap, carrier_box_cap)
-                )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, phone, sender_name, loading_address, loading_city,
+                               pallet_quantity, box_quantity, loading_date, loading_time, delivery_date, rate, warehouse, chat_id
+                        FROM t_p52349012_telegram_bot_creatio.sender_orders
+                        WHERE delivery_date = %s
+                        AND (warehouse_normalized = %s OR warehouse = %s)
+                        AND marketplace = %s
+                        AND loading_city_normalized = %s
+                        AND (
+                            (%s >= pallet_quantity) OR
+                            (%s = 0 AND %s >= box_quantity)
+                        )
+                        ORDER BY id DESC
+                        LIMIT 5
+                        """,
+                        (arrival_date, warehouse_norm, warehouse, marketplace, loading_city_norm,
+                         carrier_pallet_cap, carrier_pallet_cap, carrier_box_cap)
+                    )
                 
                 matches = cur.fetchall()
                 
