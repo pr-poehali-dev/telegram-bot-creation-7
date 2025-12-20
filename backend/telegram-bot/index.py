@@ -514,15 +514,12 @@ def show_main_menu(chat_id: int):
     """Показать главное меню выбора услуги"""
     user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
     
-    templates = get_user_templates(chat_id)
     keyboard_buttons = [
         [{'text': '📦 Отправитель'}],
         [{'text': '🚚 Перевозчик'}],
-        [{'text': '📋 Мои заявки'}]
+        [{'text': '📋 Мои заявки'}],
+        [{'text': '💾 Мои шаблоны'}]
     ]
-    
-    if templates:
-        keyboard_buttons.append([{'text': '💾 Мои шаблоны'}])
     
     reply_markup = {
         'keyboard': keyboard_buttons,
@@ -532,7 +529,7 @@ def show_main_menu(chat_id: int):
     
     send_message(
         chat_id,
-        "👋 <b>Добро пожаловать!</b>\n\n⚠️ <b>Важно:</b>\n• Заявки отправителей удаляются через 5 дней после даты поставки\n• Сохраняйте скрины переписок\n• Сверяйте данные авто с заявкой\n\n<b>Выберите услугу:</b>",
+        "👋 <b>Добро пожаловать!</b>\n\n⚠️ <b>Важно:</b>\n• Заявки отправителей удаляются через 48 часов после даты поставки\n• Сохраняйте скрины переписок\n• Сверяйте данные авто с заявкой\n\n<b>Выберите услугу:</b>",
         reply_markup
     )
 
@@ -1204,6 +1201,14 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         return
     
     if text == '/start':
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT chat_id FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE chat_id = %s UNION SELECT chat_id FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE chat_id = %s LIMIT 1", (chat_id, chat_id))
+                is_first_time = cur.fetchone() is None
+        finally:
+            conn.close()
+        
         user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
         
         keyboard_buttons = [
@@ -1219,11 +1224,30 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             'one_time_keyboard': False
         }
         
-        send_message(
-            chat_id,
-            "👋 <b>Добро пожаловать!</b>\n\n⚠️ <b>Важно:</b>\n• Сохраняйте скрины переписок\n• Сверяйте данные авто с заявкой\n• Будьте внимательны к деталям\n\n📋 /terms | 🔒 /privacy\n\n<b>Выберите услугу:</b>",
-            reply_markup
-        )
+        if is_first_time:
+            welcome_text = (
+                "👋 <b>Добро пожаловать!</b>\n\n"
+                "⚠️ <b>Используя бота, вы соглашаетесь с:</b>\n"
+                "📋 Пользовательским соглашением — /terms\n"
+                "🔒 Политикой конфиденциальности — /privacy\n\n"
+                "<b>Важно:</b>\n"
+                "• Сохраняйте скрины переписок\n"
+                "• Сверяйте данные авто с заявкой\n"
+                "• Будьте внимательны к деталям\n\n"
+                "<b>Выберите услугу:</b>"
+            )
+        else:
+            welcome_text = (
+                "👋 <b>Добро пожаловать!</b>\n\n"
+                "⚠️ <b>Важно:</b>\n"
+                "• Сохраняйте скрины переписок\n"
+                "• Сверяйте данные авто с заявкой\n"
+                "• Будьте внимательны к деталям\n\n"
+                "📋 /terms | 🔒 /privacy\n\n"
+                "<b>Выберите услугу:</b>"
+            )
+        
+        send_message(chat_id, welcome_text, reply_markup)
         return
     
     if chat_id not in user_states:
@@ -2050,11 +2074,11 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                     try:
                         from datetime import datetime, timedelta
                         delivery_date_obj = datetime.strptime(delivery_date_str, '%Y-%m-%d')
-                        delete_date = delivery_date_obj + timedelta(days=5)
-                        delete_date_str = delete_date.strftime('%d.%m.%Y')
-                        auto_delete_warning = f"\n\n⏰ <b>Важно:</b> Заявка будет автоматически удалена {delete_date_str} (через 5 дней после даты поставки)"
+                        delete_date = delivery_date_obj + timedelta(hours=48)
+                        delete_date_str = delete_date.strftime('%d.%m.%Y %H:%M')
+                        auto_delete_warning = f"\n\n⏰ <b>Важно:</b> Заявка будет автоматически удалена {delete_date_str} (через 48 часов после даты поставки)"
                     except:
-                        auto_delete_warning = "\n\n⏰ <b>Важно:</b> Заявка будет автоматически удалена через 5 дней после даты поставки на склад"
+                        auto_delete_warning = "\n\n⏰ <b>Важно:</b> Заявка будет автоматически удалена через 48 часов после даты поставки на склад"
                     
                     send_message(
                         chat_id,
