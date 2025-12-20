@@ -1649,7 +1649,7 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             return
         
         value = int(text)
-        is_valid, error_msg = validate_number_range(value, 500, 500000, "Ставка")
+        is_valid, error_msg = validate_number_range(value, 100, 900000, "Ставка")
         if not is_valid:
             send_message(chat_id, error_msg)
             return
