@@ -396,19 +396,27 @@ def show_templates_management(chat_id: int):
     message = "💾 <b>Ваши шаблоны:</b>\n\n"
     buttons = []
     
-    for template in templates:
+    for i, template in enumerate(templates):
         template_id = template['id']
         template_name = template['template_name']
         order_type = template['order_type']
         emoji = '📦' if order_type == 'sender' else '🚚'
+        order_type_ru = 'Отправитель' if order_type == 'sender' else 'Перевозчик'
         
-        message += f"{emoji} <b>{template_name}</b> ({order_type})\n"
+        message += f"{emoji} <b>{template_name}</b>\n"
+        message += f"   Тип: {order_type_ru}\n\n"
+        
         buttons.append([
-            {'text': f'✅ Использовать: {template_name}', 'callback_data': f'use_template_{template_id}'},
+            {'text': f'✅ Использовать', 'callback_data': f'use_template_{template_id}'}
+        ])
+        buttons.append([
             {'text': f'🗑 Удалить', 'callback_data': f'delete_template_{template_id}'}
         ])
+        
+        if i < len(templates) - 1:
+            buttons.append([{'text': '—————————', 'callback_data': 'ignore'}])
     
-    message += "\n💡 Выберите шаблон для использования или удаления"
+    message += "💡 Выберите действие для нужного шаблона"
     
     send_message(
         chat_id,
@@ -681,6 +689,9 @@ def edit_message(chat_id: int, message_id: int, text: str, reply_markup: Optiona
 
 
 def process_callback(chat_id: int, callback_data: str, message_id: int):
+    if callback_data == 'ignore':
+        return
+    
     if chat_id not in user_states:
         send_message(chat_id, "Сессия истекла. Введите /start для начала")
         return
