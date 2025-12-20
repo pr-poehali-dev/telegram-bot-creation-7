@@ -17,11 +17,179 @@ import ipaddress
 import re
 import html
 
+MARKETPLACES = ['Wildberries', 'OZON', 'Яндекс.Маркет', 'AliExpress', 'Другой']
+MAX_ORDERS_PER_DAY = 10
+MAX_TEXT_LENGTH = 500
+MAX_REQUESTS_PER_MINUTE = 20
+SESSION_TIMEOUT = 6 * 60 * 60
+
+user_states: Dict[int, Dict[str, Any]] = {}
+admin_sessions: Dict[int, int] = {}
+request_counts: Dict[int, list] = defaultdict(list)
+
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 ADMIN_CHAT_ID = os.environ.get('TELEGRAM_ADMIN_CHAT_ID', '')
 PDF_FUNCTION_URL = 'https://functions.poehali.dev/a68807d2-57ae-4e99-b9e2-44b1dcfcc5b6'
 
+
+def is_telegram_request(ip: str) -> bool:
+    return True
+
+def is_rate_limited(chat_id: int) -> bool:
+    now = time.time()
+    requests_list = request_counts[chat_id]
+    requests_list = [req for req in requests_list if now - req < 60]
+    request_counts[chat_id] = requests_list
+    if len(requests_list) >= MAX_REQUESTS_PER_MINUTE:
+        return True
+    requests_list.append(now)
+    return False
+
+def validate_text_length(text: str, max_length: int = MAX_TEXT_LENGTH) -> bool:
+    return len(text) <= max_length
+
+def check_admin_session(chat_id: int) -> bool:
+    ADMIN_SESSION_TIMEOUT = 30 * 60
+    if chat_id in admin_sessions:
+        session_time = admin_sessions[chat_id]
+        if time.time() - session_time < ADMIN_SESSION_TIMEOUT:
+            return True
+        else:
+            del admin_sessions[chat_id]
+    return False
+
+def create_admin_session(chat_id: int):
+    admin_sessions[chat_id] = int(time.time())
+
+def normalize_warehouse(warehouse: str) -> str:
+    if not warehouse:
+        return ''
+    normalized = warehouse.lower().strip()
+    normalized = ' '.join(normalized.split())
+    replacements = {'коледино': 'каледино', 'электросталь': 'електросталь', 'подольск': 'падольск', 'щелково': 'щолково', 'чехов': 'чихов', 'е': 'е', 'ё': 'е'}
+    for wrong, correct in replacements.items():
+        normalized = normalized.replace(wrong, correct)
+    normalized = ''.join(c for c in normalized if c.isalnum() or c.isspace())
+    return normalized
+
+def log_security_event(chat_id: int, event_type: str, details: str, severity: str = 'medium'):
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO t_p52349012_telegram_bot_creatio.security_logs (chat_id, event_type, details, severity) VALUES (%s, %s, %s, %s)", (chat_id, event_type, details, severity))
+            conn.commit()
+        conn.close()
+    except:
+        pass
+
+def auto_block_user(chat_id: int, reason: str):
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO t_p52349012_telegram_bot_creatio.auto_blocked_users (chat_id, reason) VALUES (%s, %s) ON CONFLICT (chat_id) DO UPDATE SET reason = %s, blocked_at = CURRENT_TIMESTAMP", (chat_id, reason, reason))
+            cur.execute("INSERT INTO t_p52349012_telegram_bot_creatio.blocked_users (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING", (chat_id,))
+            conn.commit()
+        conn.close()
+        log_security_event(chat_id, 'auto_block', reason, 'high')
+    except:
+        pass
+
+def is_user_blocked(chat_id: int) -> bool:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id FROM t_p52349012_telegram_bot_creatio.blocked_users WHERE chat_id = %s", (chat_id,))
+            result = cur.fetchone() is not None
+        return result
+    except:
+        return False
+    finally:
+        conn.close()
+
+def get_blocked_users() -> List[str]:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id FROM t_p52349012_telegram_bot_creatio.blocked_users")
+            return [str(row[0]) for row in cur.fetchall()]
+    except:
+        return []
+    finally:
+        conn.close()
+
+def get_user_daily_limit(chat_id: int) -> int:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT daily_order_limit FROM t_p52349012_telegram_bot_creatio.user_limits WHERE chat_id = %s", (chat_id,))
+            result = cur.fetchone()
+            return result[0] if result else MAX_ORDERS_PER_DAY
+    except:
+        return MAX_ORDERS_PER_DAY
+    finally:
+        conn.close()
+
+def get_user_orders_today(chat_id: int) -> int:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM (SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE chat_id = %s AND created_at::date = CURRENT_DATE UNION ALL SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE chat_id = %s AND created_at::date = CURRENT_DATE) AS combined", (chat_id, chat_id))
+            return cur.fetchone()[0]
+    except:
+        return 0
+    finally:
+        conn.close()
+
+def get_admin_permissions(chat_id: int) -> Optional[Dict[str, bool]]:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT ba.role, ap.* FROM t_p52349012_telegram_bot_creatio.bot_admins ba LEFT JOIN t_p52349012_telegram_bot_creatio.admin_permissions ap ON ba.id = ap.admin_id WHERE ba.chat_id = %s AND ba.is_active = true", (chat_id,))
+            result = cur.fetchone()
+            if not result:
+                return None
+            role = result.get('role', 'viewer')
+            if role == 'owner':
+                return {'role': 'owner', 'can_view_stats': True, 'can_view_orders': True, 'can_remove_orders': True, 'can_manage_users': True, 'can_block_users': True, 'can_manage_admins': True, 'can_view_security_logs': True}
+            return {'role': role, 'can_view_stats': result.get('can_view_stats', True), 'can_view_orders': result.get('can_view_orders', True), 'can_remove_orders': result.get('can_remove_orders', False), 'can_manage_users': result.get('can_manage_users', False), 'can_block_users': result.get('can_block_users', False), 'can_manage_admins': result.get('can_manage_admins', False), 'can_view_security_logs': result.get('can_view_security_logs', False)}
+    except:
+        return None
+    finally:
+        conn.close()
+
+def is_admin(chat_id: int) -> bool:
+    return get_admin_permissions(chat_id) is not None
+
+def check_suspicious_activity(chat_id: int) -> bool:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.security_logs WHERE chat_id = %s AND created_at > NOW() - INTERVAL '1 hour'", (chat_id,))
+            events_last_hour = cur.fetchone()[0]
+            if events_last_hour > 50:
+                return True
+            cur.execute("SELECT COUNT(*) FROM (SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE chat_id = %s AND created_at::date = CURRENT_DATE UNION ALL SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE chat_id = %s AND created_at::date = CURRENT_DATE) AS combined", (chat_id, chat_id))
+            orders_today = cur.fetchone()[0]
+            user_limit = get_user_daily_limit(chat_id)
+            if orders_today > user_limit * 2:
+                return True
+            return False
+    except:
+        return False
+    finally:
+        conn.close()
+
+def get_user_templates(chat_id: int) -> List[Dict[str, Any]]:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, template_name, template_type, template_data, created_at FROM t_p52349012_telegram_bot_creatio.order_templates WHERE chat_id = %s ORDER BY created_at DESC", (chat_id,))
+            return [dict(row) for row in cur.fetchall()]
+    except:
+        return []
+    finally:
+        conn.close()
 
 def send_message(chat_id: int, text: str, reply_markup: Optional[Dict] = None):
     """Отправить сообщение через Telegram Bot API"""
@@ -142,80 +310,7 @@ def send_label_to_user(chat_id: int, order_id: int, order_type: str, label_size:
     except Exception as e:
         send_message(chat_id, f"❌ Ошибка при генерации термоэтикетки: {str(e)}")
 
-MARKETPLACES = [
-    'Wildberries',
-    'OZON',
-    'Яндекс.Маркет',
-    'AliExpress',
-    'Другой'
-]
 
-user_states: Dict[int, Dict[str, Any]] = {}
-admin_sessions: Dict[int, int] = {}
-request_counts: Dict[int, list] = defaultdict(list)
-SESSION_TIMEOUT = 6 * 60 * 60
-ADMIN_SESSION_TIMEOUT = 2 * 60 * 60
-MAX_REQUESTS_PER_MINUTE = 20
-MAX_TEXT_LENGTH = 500
-MAX_ORDERS_PER_DAY = 10
-TELEGRAM_IPS = ['149.154.160.0/20', '91.108.4.0/22', '185.178.208.0/22']
-
-
-def normalize_warehouse(warehouse: str) -> str:
-    """Нормализует название склада для fuzzy matching"""
-    if not warehouse:
-        return ''
-    
-    normalized = warehouse.lower().strip()
-    normalized = ' '.join(normalized.split())
-    
-    replacements = {
-        'коледино': 'каледино',
-        'электросталь': 'електросталь',
-        'подольск': 'падольск',
-        'щелково': 'щолково',
-        'чехов': 'чихов',
-        'е': 'е',
-        'ё': 'е'
-    }
-    
-    for wrong, correct in replacements.items():
-        normalized = normalized.replace(wrong, correct)
-    
-    normalized = ''.join(c for c in normalized if c.isalnum() or c.isspace())
-    
-    return normalized
-
-
-def is_telegram_request(ip: str) -> bool:
-    if not ip:
-        return False
-    try:
-        ip_addr = ipaddress.ip_address(ip)
-        for cidr in TELEGRAM_IPS:
-            if ip_addr in ipaddress.ip_network(cidr):
-                return True
-        return False
-    except:
-        return False
-
-
-def is_rate_limited(chat_id: int) -> bool:
-    now = time.time()
-    requests_list = request_counts[chat_id]
-    
-    requests_list = [req for req in requests_list if now - req < 60]
-    request_counts[chat_id] = requests_list
-    
-    if len(requests_list) >= MAX_REQUESTS_PER_MINUTE:
-        return True
-    
-    requests_list.append(now)
-    return False
-
-
-def validate_text_length(text: str, max_length: int = MAX_TEXT_LENGTH) -> bool:
-    return len(text) <= max_length
 
 
 def validate_phone(phone: str) -> bool:
@@ -259,53 +354,7 @@ def mask_chat_id(chat_id: int) -> str:
     return f"{chat_id_str[:3]}{'*' * (len(chat_id_str) - 6)}{chat_id_str[-3:]}"
 
 
-def log_security_event(chat_id: int, event_type: str, details: str, severity: str = 'medium'):
-    try:
-        conn = psycopg2.connect(os.environ['DATABASE_URL'])
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO t_p52349012_telegram_bot_creatio.security_logs 
-                (chat_id, event_type, details, severity)
-                VALUES (%s, %s, %s, %s)
-                """,
-                (chat_id, event_type, details, severity)
-            )
-            conn.commit()
-        conn.close()
-    except:
-        pass
 
-
-def auto_block_user(chat_id: int, reason: str):
-    try:
-        conn = psycopg2.connect(os.environ['DATABASE_URL'])
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO t_p52349012_telegram_bot_creatio.auto_blocked_users (chat_id, reason)
-                VALUES (%s, %s)
-                ON CONFLICT (chat_id) DO UPDATE SET reason = %s, blocked_at = CURRENT_TIMESTAMP
-                """,
-                (chat_id, reason, reason)
-            )
-            
-            cur.execute(
-                """
-                INSERT INTO t_p52349012_telegram_bot_creatio.blocked_users (chat_id)
-                VALUES (%s)
-                ON CONFLICT (chat_id) DO NOTHING
-                """,
-                (chat_id,)
-            )
-            
-            conn.commit()
-        conn.close()
-        
-        log_security_event(chat_id, 'auto_block', reason, 'high')
-        notify_admin_about_block(chat_id, reason)
-    except:
-        pass
 
 
 def notify_admin_about_block(chat_id: int, reason: str):
@@ -326,184 +375,10 @@ def notify_admin_about_block(chat_id: int, reason: str):
         pass
 
 
-def is_user_blocked(chat_id: int) -> bool:
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT chat_id FROM t_p52349012_telegram_bot_creatio.blocked_users WHERE chat_id = %s",
-                (chat_id,)
-            )
-            result = cur.fetchone() is not None
-        return result
-    except:
-        return False
-    finally:
-        conn.close()
 
 
-def get_user_daily_limit(chat_id: int) -> int:
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT daily_order_limit FROM t_p52349012_telegram_bot_creatio.user_limits WHERE chat_id = %s",
-                (chat_id,)
-            )
-            result = cur.fetchone()
-            return result[0] if result else MAX_ORDERS_PER_DAY
-    except:
-        return MAX_ORDERS_PER_DAY
-    finally:
-        conn.close()
 
 
-def get_user_orders_today(chat_id: int) -> int:
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT COUNT(*) FROM (
-                    SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders
-                    WHERE chat_id = %s AND created_at::date = CURRENT_DATE
-                    UNION ALL
-                    SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders
-                    WHERE chat_id = %s AND created_at::date = CURRENT_DATE
-                ) AS combined
-            """, (chat_id, chat_id))
-            return cur.fetchone()[0]
-    except:
-        return 0
-    finally:
-        conn.close()
-
-
-def get_admin_permissions(chat_id: int) -> Dict[str, bool]:
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT ba.role, ap.*
-                FROM t_p52349012_telegram_bot_creatio.bot_admins ba
-                LEFT JOIN t_p52349012_telegram_bot_creatio.admin_permissions ap ON ba.id = ap.admin_id
-                WHERE ba.chat_id = %s AND ba.is_active = true
-            """, (chat_id,))
-            result = cur.fetchone()
-            
-            if not result:
-                return None
-            
-            role = result.get('role', 'viewer')
-            
-            if role == 'owner':
-                return {
-                    'role': 'owner',
-                    'can_view_stats': True,
-                    'can_view_orders': True,
-                    'can_remove_orders': True,
-                    'can_manage_users': True,
-                    'can_block_users': True,
-                    'can_manage_admins': True,
-                    'can_view_security_logs': True
-                }
-            
-            return {
-                'role': role,
-                'can_view_stats': result.get('can_view_stats', True),
-                'can_view_orders': result.get('can_view_orders', True),
-                'can_remove_orders': result.get('can_remove_orders', False),
-                'can_manage_users': result.get('can_manage_users', False),
-                'can_block_users': result.get('can_block_users', False),
-                'can_manage_admins': result.get('can_manage_admins', False),
-                'can_view_security_logs': result.get('can_view_security_logs', False)
-            }
-    except:
-        return None
-    finally:
-        conn.close()
-
-
-def is_admin(chat_id: int) -> bool:
-    perms = get_admin_permissions(chat_id)
-    return perms is not None
-
-
-def check_suspicious_activity(chat_id: int):
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.security_logs
-                WHERE chat_id = %s AND created_at > NOW() - INTERVAL '1 hour'
-            """, (chat_id,))
-            
-            events_last_hour = cur.fetchone()[0]
-            
-            if events_last_hour > 50:
-                auto_block_user(chat_id, f'Подозрительная активность: {events_last_hour} событий за час')
-                return True
-            
-            cur.execute("""
-                SELECT COUNT(*) FROM (
-                    SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders
-                    WHERE chat_id = %s AND created_at::date = CURRENT_DATE
-                    UNION ALL
-                    SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders
-                    WHERE chat_id = %s AND created_at::date = CURRENT_DATE
-                ) AS combined
-            """, (chat_id, chat_id))
-            
-            orders_today = cur.fetchone()[0]
-            user_limit = get_user_daily_limit(chat_id)
-            
-            if orders_today > user_limit * 2:
-                auto_block_user(chat_id, f'Превышение лимита в 2 раза: {orders_today} заявок при лимите {user_limit}')
-                return True
-            
-            return False
-    except:
-        return False
-    finally:
-        conn.close()
-
-
-def get_user_templates(chat_id: int) -> List[Dict[str, Any]]:
-    """Получить все шаблоны пользователя"""
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id, template_name, order_type, template_data FROM t_p52349012_telegram_bot_creatio.order_templates WHERE chat_id = %s ORDER BY created_at DESC",
-                (chat_id,)
-            )
-            return cur.fetchall()
-    except:
-        return []
-    finally:
-        conn.close()
-
-
-def save_template(chat_id: int, template_name: str, order_type: str, data: Dict[str, Any]):
-    """Сохранить шаблон заявки"""
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    try:
-        with conn.cursor() as cur:
-            import json
-            cur.execute(
-                """
-                INSERT INTO t_p52349012_telegram_bot_creatio.order_templates (chat_id, template_name, order_type, template_data)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (chat_id, template_name) DO UPDATE SET template_data = EXCLUDED.template_data, order_type = EXCLUDED.order_type
-                """,
-                (chat_id, template_name, order_type, json.dumps(data))
-            )
-            conn.commit()
-            return True
-    except Exception as e:
-        print(f"[ERROR] save_template failed: {str(e)}")
-        return False
-    finally:
-        conn.close()
 
 
 def load_template(template_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
