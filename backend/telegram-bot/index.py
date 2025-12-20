@@ -688,6 +688,14 @@ def edit_message(chat_id: int, message_id: int, text: str, reply_markup: Optiona
     requests.post(f"{BASE_URL}/editMessageText", json=payload)
 
 
+def delete_message(chat_id: int, message_id: int):
+    payload = {
+        'chat_id': chat_id,
+        'message_id': message_id
+    }
+    requests.post(f"{BASE_URL}/deleteMessage", json=payload)
+
+
 def process_callback(chat_id: int, callback_data: str, message_id: int):
     if callback_data == 'ignore':
         return
@@ -923,7 +931,7 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         parts = callback_data.replace('delete_order_', '').split('_')
         order_type = parts[0]
         order_id = int(parts[1])
-        delete_user_order(chat_id, order_id, order_type)
+        delete_user_order(chat_id, order_id, order_type, message_id)
         return
     
     elif callback_data.startswith('admin_'):
@@ -2340,7 +2348,7 @@ def show_my_orders(chat_id: int):
         conn.close()
 
 
-def delete_user_order(chat_id: int, order_id: int, order_type: str):
+def delete_user_order(chat_id: int, order_id: int, order_type: str, message_id: int):
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor() as cur:
@@ -2350,6 +2358,8 @@ def delete_user_order(chat_id: int, order_id: int, order_type: str):
                 (order_id, chat_id)
             )
             conn.commit()
+        
+        delete_message(chat_id, message_id)
     finally:
         conn.close()
 
