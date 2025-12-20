@@ -388,7 +388,7 @@ def show_templates_management(chat_id: int):
         send_message(
             chat_id,
             "📭 <b>У вас пока нет сохранённых шаблонов</b>\n\n"
-            "Шаблоны создаются автоматически после создания заявки.\n"
+            "Создайте заявку отправителя или перевозчика и нажмите 'Сохранить как шаблон'.\n\n"
             "Введите /start для создания новой заявки."
         )
         return
@@ -404,10 +404,11 @@ def show_templates_management(chat_id: int):
         
         message += f"{emoji} <b>{template_name}</b> ({order_type})\n"
         buttons.append([
-            {'text': f'🗑 Удалить: {template_name}', 'callback_data': f'delete_template_{template_id}'}
+            {'text': f'✅ Использовать: {template_name}', 'callback_data': f'use_template_{template_id}'},
+            {'text': f'🗑 Удалить', 'callback_data': f'delete_template_{template_id}'}
         ])
     
-    message += "\n💡 Нажмите на шаблон в главном меню чтобы использовать его"
+    message += "\n💡 Выберите шаблон для использования или удаления"
     
     send_message(
         chat_id,
@@ -429,10 +430,6 @@ def show_main_menu(chat_id: int):
     
     if templates:
         keyboard_buttons.append([{'text': '💾 Мои шаблоны'}])
-        for template in templates[:5]:
-            template_name = template['template_name']
-            emoji = '📦' if template['order_type'] == 'sender' else '🚚'
-            keyboard_buttons.insert(0, [{'text': f"{emoji} {template_name}"}])
     
     send_message(
         chat_id,
@@ -796,6 +793,25 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         )
         return
     
+    elif callback_data.startswith('use_template_'):
+        template_id = int(callback_data.replace('use_template_', ''))
+        template = load_template(template_id, chat_id)
+        
+        if not template:
+            send_message(chat_id, "❌ Шаблон не найден")
+            return
+        
+        template_data = template['data']
+        template_type = template['type']
+        
+        data['type'] = template_type
+        for key, value in template_data.items():
+            data[key] = value
+        
+        state['step'] = 'show_preview'
+        show_preview(chat_id, data)
+        return
+    
     elif callback_data.startswith('delete_template_'):
         template_id = int(callback_data.replace('delete_template_', ''))
         if delete_template(chat_id, template_id):
@@ -866,13 +882,14 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
             )
     
     elif callback_data == 'save_as_template':
-        template_name = f"Шаблон {datetime.now().strftime('%d.%m %H:%M')}"
-        order_type = data.get('type', 'sender')
-        if save_template(chat_id, template_name, order_type, data):
-            send_message(chat_id, "✅ Шаблон сохранён!\n\nПродолжайте редактирование или создайте заявку.")
-        else:
-            send_message(chat_id, "❌ Ошибка сохранения шаблона")
-        show_preview(chat_id, data)
+        state['step'] = 'enter_template_name'
+        send_message(
+            chat_id,
+            "💾 <b>Сохранение шаблона</b>\n\n"
+            "Введите название для шаблона (от 3 до 50 символов):\n\n"
+            "Например: 'Мой маршрут' или 'Доставка в Москву'",
+            {'remove_keyboard': True}
+        )
         return
     
     elif callback_data == 'confirm_create':
@@ -1127,10 +1144,6 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         
         if templates:
             keyboard_buttons.append([{'text': '💾 Мои шаблоны'}])
-            for template in templates[:5]:
-                template_name = template['template_name']
-                emoji = '📦' if template['order_type'] == 'sender' else '🚚'
-                keyboard_buttons.insert(0, [{'text': f"{emoji} {template_name}"}])
         
         send_message(
             chat_id,
@@ -1313,9 +1326,9 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         if save_template(chat_id, template_name, order_type, data):
             send_message(
                 chat_id,
-                f"✅ <b>Шаблон '{template_name}' сохранён!</b>\n\nТеперь вы увидите его в главном меню."
+                f"✅ <b>Шаблон '{template_name}' сохранён!</b>\n\nТеперь вы можете найти его в разделе 'Мои шаблоны'."
             )
-            show_main_menu(chat_id)
+            show_preview(chat_id, data)
         else:
             send_message(
                 chat_id,
@@ -1324,26 +1337,6 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         return
     
     if step == 'choose_service':
-        templates = get_user_templates(chat_id)
-        template_found = False
-        
-        for template in templates:
-            if template['template_name'] in text:
-                template_data = template['template_data']
-                template_type = template['order_type']
-                
-                data['type'] = template_type
-                for key, value in template_data.items():
-                    data[key] = value
-                
-                state['step'] = 'show_preview'
-                show_preview(chat_id, data)
-                template_found = True
-                break
-        
-        if template_found:
-            return
-        
         if '📦' in text or 'отправитель' in text.lower():
             data['type'] = 'sender'
             state['step'] = 'choose_marketplace'
