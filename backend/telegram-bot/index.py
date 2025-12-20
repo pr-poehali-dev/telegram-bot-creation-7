@@ -2314,24 +2314,29 @@ def show_my_orders(chat_id: int):
             
             if sender_orders:
                 message_parts.append("📦 <b>Ваши заявки отправителя:</b>\n")
-                for order in sender_orders:
+                for i, order in enumerate(sender_orders):
                     message_parts.append(
                         f"#{order['id']} - {order.get('marketplace', '-')} → {order.get('warehouse', '-')} ({order.get('loading_date', '-')})\n"
                     )
                     keyboard_buttons.append([
                         {
-                            'text': f"✏️ Редактировать #{order['id']}",
+                            'text': f"✏️ Редактировать",
                             'callback_data': f"edit_order_sender_{order['id']}"
-                        },
+                        }
+                    ])
+                    keyboard_buttons.append([
                         {
-                            'text': f"🗑️ Удалить #{order['id']}",
+                            'text': f"🗑️ Удалить",
                             'callback_data': f"delete_order_sender_{order['id']}"
                         }
                     ])
+                    
+                    if i < len(sender_orders) - 1:
+                        keyboard_buttons.append([{'text': '—————————', 'callback_data': 'ignore'}])
             
             if carrier_orders:
                 message_parts.append("\n🚚 <b>Ваши заявки перевозчика:</b>\n")
-                for order in carrier_orders:
+                for i, order in enumerate(carrier_orders):
                     loading = order.get('loading_date', '-')
                     arrival = order.get('arrival_date', '-')
                     message_parts.append(
@@ -2339,14 +2344,19 @@ def show_my_orders(chat_id: int):
                     )
                     keyboard_buttons.append([
                         {
-                            'text': f"✏️ Редактировать #{order['id']}",
+                            'text': f"✏️ Редактировать",
                             'callback_data': f"edit_order_carrier_{order['id']}"
-                        },
+                        }
+                    ])
+                    keyboard_buttons.append([
                         {
-                            'text': f"🗑️ Удалить #{order['id']}",
+                            'text': f"🗑️ Удалить",
                             'callback_data': f"delete_order_carrier_{order['id']}"
                         }
                     ])
+                    
+                    if i < len(carrier_orders) - 1:
+                        keyboard_buttons.append([{'text': '—————————', 'callback_data': 'ignore'}])
             
             send_message(
                 chat_id,
