@@ -490,19 +490,21 @@ def show_main_menu(chat_id: int):
     if templates:
         keyboard_buttons.append([{'text': '💾 Мои шаблоны'}])
     
-    send_message(
-        chat_id,
-        "👋 <b>Добро пожаловать!</b>\n\n"
-        "⚠️ <b>Важно:</b>\n"
-        "• Заявки отправителей удаляются через 5 дней после даты поставки\n"
-        "• Сохраняйте скрины переписок\n"
-        "• Сверяйте данные авто с заявкой\n\n"
-        "<b>Выберите услугу:</b>",
-        {
-            'keyboard': keyboard_buttons,
-            'resize_keyboard': True,
-            'one_time_keyboard': False
-        }
+    reply_markup = {
+        'keyboard': keyboard_buttons,
+        'resize_keyboard': True,
+        'one_time_keyboard': False
+    }
+    
+    requests.post(
+        f"{BASE_URL}/sendMessage",
+        json={
+            'chat_id': chat_id,
+            'text': "👋 <b>Добро пожаловать!</b>\n\n⚠️ <b>Важно:</b>\n• Заявки отправителей удаляются через 5 дней после даты поставки\n• Сохраняйте скрины переписок\n• Сверяйте данные авто с заявкой\n\n<b>Выберите услугу:</b>",
+            'parse_mode': 'HTML',
+            'reply_markup': reply_markup
+        },
+        timeout=10
     )
 
 
@@ -1226,19 +1228,21 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         if templates:
             keyboard_buttons.append([{'text': '💾 Мои шаблоны'}])
         
-        send_message(
-            chat_id,
-            "👋 <b>Добро пожаловать!</b>\n\n"
-            "⚠️ <b>Важно:</b>\n"
-            "• Сохраняйте скрины переписок\n"
-            "• Сверяйте данные авто с заявкой\n"
-            "• Будьте внимательны к деталям\n\n"
-            "<b>Выберите услугу:</b>",
-            {
-                'keyboard': keyboard_buttons,
-                'resize_keyboard': True,
-                'one_time_keyboard': False
-            }
+        reply_markup = {
+            'keyboard': keyboard_buttons,
+            'resize_keyboard': True,
+            'one_time_keyboard': False
+        }
+        
+        requests.post(
+            f"{BASE_URL}/sendMessage",
+            json={
+                'chat_id': chat_id,
+                'text': "👋 <b>Добро пожаловать!</b>\n\n⚠️ <b>Важно:</b>\n• Сохраняйте скрины переписок\n• Сверяйте данные авто с заявкой\n• Будьте внимательны к деталям\n\n<b>Выберите услугу:</b>",
+                'parse_mode': 'HTML',
+                'reply_markup': reply_markup
+            },
+            timeout=10
         )
         return
     
