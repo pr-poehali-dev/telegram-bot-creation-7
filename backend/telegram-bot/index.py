@@ -1615,6 +1615,7 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             state['step'] = 'choose_marketplace'
             
             keyboard = [[{'text': mp}] for mp in MARKETPLACES]
+            keyboard.append([{'text': '⬅️ Назад'}])
             send_message(
                 chat_id,
                 "🏪 <b>Выберите маркетплейс:</b>",
@@ -1625,6 +1626,7 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             state['step'] = 'choose_marketplace'
             
             keyboard = [[{'text': mp}] for mp in MARKETPLACES]
+            keyboard.append([{'text': '⬅️ Назад'}])
             send_message(
                 chat_id,
                 "🏪 <b>Выберите маркетплейс:</b>",
@@ -1728,18 +1730,24 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             
             state['step'] = 'sender_loading_time'
             send_message(chat_id, "🕐 <b>Укажите время ПОГРУЗКИ</b>\n\nФормат: ЧЧ:ММ\nНапример: 14:30", {
-                'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+                'keyboard': [
+                    [{'text': '🕒 Любое время'}],
+                    [{'text': '⬅️ Назад'}]
+                ], 'resize_keyboard': True, 'one_time_keyboard': False
             })
         except ValueError:
             send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
     
     elif step == 'sender_loading_time':
         import re
-        time_pattern = r'^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$'
-        if not re.match(time_pattern, text):
-            send_message(chat_id, "❌ Неверный формат времени. Используйте ЧЧ:ММ (например: 14:30)")
-            return
-        data['loading_time'] = text
+        if 'любое' in text.lower() or '🕒' in text:
+            data['loading_time'] = '00:00'
+        else:
+            time_pattern = r'^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$'
+            if not re.match(time_pattern, text):
+                send_message(chat_id, "❌ Неверный формат времени. Используйте ЧЧ:ММ (например: 14:30)")
+                return
+            data['loading_time'] = text
         state['step'] = 'sender_delivery_date'
         
         today = datetime.now()
@@ -1751,7 +1759,8 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
                 'keyboard': [
                     [{'text': f"🔴 Сегодня ({today.strftime('%d.%m.%Y')})"}],
                     [{'text': f"🟢 Завтра ({tomorrow.strftime('%d.%m.%Y')})"}],
-                    [{'text': 'Ввести дату'}]
+                    [{'text': 'Ввести дату'}],
+                    [{'text': '⬅️ Назад'}]
                 ],
                 'resize_keyboard': True,
                 'one_time_keyboard': True
@@ -1783,14 +1792,28 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             
             data['delivery_date'] = delivery_date.strftime('%Y-%m-%d')
             state['step'] = 'sender_pallet_quantity'
-            send_message(chat_id, "📦 <b>Укажите количество паллет</b>\n\nНапример: 5\nИли 0, если нет паллет", {'remove_keyboard': True})
+            send_message(chat_id, "📦 <b>Укажите количество паллет</b>\n\nНапример: 5\nИли 0, если нет паллет", {
+                'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+            })
         except ValueError:
             send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
     
     elif step == 'sender_pallet_quantity':
-        data['pallet_quantity'] = int(text) if text.isdigit() else 0
+        if not text.isdigit():
+            send_message(chat_id, "❌ Введите целое число")
+            return
+        
+        value = int(text)
+        is_valid, error_msg = validate_number_range(value, 0, 33, "Количество паллет")
+        if not is_valid:
+            send_message(chat_id, error_msg)
+            return
+        
+        data['pallet_quantity'] = value
         state['step'] = 'sender_box_quantity'
-        send_message(chat_id, "📦 <b>Укажите количество коробок</b>\n\nНапример: 10\nИли 0, если нет коробок")
+        send_message(chat_id, "📦 <b>Укажите количество коробок</b>\n\nНапример: 10\nИли 0, если нет коробок", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })
     
     elif step == 'sender_box_quantity':
         if not text.isdigit():
@@ -1805,12 +1828,19 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         
         data['box_quantity'] = value
         state['step'] = 'sender_name'
-        send_message(chat_id, "👤 <b>Укажите ФИО отправителя</b>\n\nНапример: Иванов Иван Иванович")
+        send_message(chat_id, "👤 <b>Укажите ФИО отправителя</b>\n\nНапример: Иванов Иван Иванович", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })
     
     elif step == 'sender_name':
+        if len(text.strip()) < 3:
+            send_message(chat_id, "❌ ФИО должно содержать минимум 3 символа")
+            return
         data['sender_name'] = text
         state['step'] = 'sender_phone'
-        send_message(chat_id, "📱 <b>Укажите номер телефона</b>\n\nФормат: +79991234567")
+        send_message(chat_id, "📱 <b>Укажите номер телефона</b>\n\nФормат: +79991234567", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })
     
     elif step == 'sender_phone':
         phone = text.strip()
@@ -1826,7 +1856,9 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         
         data['phone'] = phone
         state['step'] = 'sender_rate'
-        send_message(chat_id, "💵 <b>Укажите желаемую ставку в рублях</b>\n\nНапример: 5000", {'remove_keyboard': True})
+        send_message(chat_id, "💵 <b>Укажите желаемую ставку в рублях</b>\n\nНапример: 5000", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })
     
     elif step == 'sender_rate':
         if not text.isdigit():
