@@ -2733,22 +2733,24 @@ def send_notifications_to_subscribers(order_id: int, order_type: str, data: Dict
 
 def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str, Any]):
     """
-    Автоматически подбирает заявки с совпадающими датами:
-    - Для отправителя ищет перевозчиков с такой же датой погрузки
-    - Для перевозчика ищет отправителей с совпадающей датой
+    Подбор подходящих заявок:
+    - Отправитель видит только перевозчиков (по дате поставки, складу, вместимости)
+    - Перевозчик видит только отправителей (по дате поставки, складу, вместимости)
     """
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             if order_type == 'sender':
-                # Отправитель создал заявку - ищем перевозчиков с такой же датой погрузки
-                loading_date = data.get('loading_date')
+                # Отправитель создал заявку - ищем перевозчиков с подходящей вместимостью
+                delivery_date = data.get('delivery_date')
                 warehouse = data.get('warehouse')
                 marketplace = data.get('marketplace')
                 sender_chat_id = data.get('chat_id')
+                sender_pallet_qty = data.get('pallet_quantity', 0)
+                sender_box_qty = data.get('box_quantity', 0)
                 
-                if not loading_date:
+                if not delivery_date:
                     return
                 
                 warehouse_norm = normalize_warehouse(warehouse)
@@ -2757,13 +2759,18 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                     SELECT id, phone, driver_name, car_brand, car_model, 
                            pallet_capacity, box_capacity, loading_date, arrival_date, hydroboard, warehouse, chat_id
                     FROM t_p52349012_telegram_bot_creatio.carrier_orders
-                    WHERE loading_date = %s
+                    WHERE arrival_date = %s
                     AND (warehouse_normalized = %s OR warehouse = %s)
                     AND marketplace = %s
+                    AND (
+                        (pallet_capacity >= %s AND %s > 0) OR
+                        (pallet_capacity = 0 AND %s = 0 AND box_capacity >= %s)
+                    )
                     ORDER BY id DESC
                     LIMIT 5
                     """,
-                    (loading_date, warehouse_norm, warehouse, marketplace)
+                    (delivery_date, warehouse_norm, warehouse, marketplace, 
+                     sender_pallet_qty, sender_pallet_qty, sender_pallet_qty, sender_box_qty)
                 )
                 
                 matches = cur.fetchall()
@@ -2772,7 +2779,7 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                     # Отправляем отправителю список подходящих перевозчиков
                     if sender_chat_id:
                         message = f"🎯 <b>Найдены подходящие перевозчики для вашей заявки #{order_id}!</b>\n\n"
-                        message += f"📅 Дата погрузки: {loading_date}\n"
+                        message += f"📅 Дата поставки: {delivery_date}\n"
                         message += f"📍 Склад: {warehouse}\n\n"
                         
                         for i, match in enumerate(matches, 1):
@@ -2793,14 +2800,23 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                     # Отправляем перевозчикам уведомление о новом подходящем отправителе
                     for match in matches:
                         carrier_chat_id = match.get('chat_id')
+                        carrier_pallet_cap = match.get('pallet_capacity', 0)
+                        carrier_box_cap = match.get('box_capacity', 0)
                         
-                        if carrier_chat_id:
+                        # Проверяем соответствие вместимости перевозчика грузу отправителя
+                        is_match = False
+                        if sender_pallet_qty > 0 and carrier_pallet_cap >= sender_pallet_qty:
+                            is_match = True
+                        elif sender_pallet_qty == 0 and carrier_pallet_cap == 0 and carrier_box_cap >= sender_box_qty:
+                            is_match = True
+                        
+                        if carrier_chat_id and is_match:
                             carrier_message = (
                                 f"🎯 <b>Найдена подходящая заявка отправителя #{order_id}!</b>\n\n"
-                                f"📅 Дата погрузки: {loading_date}\n"
+                                f"📅 Дата поставки: {delivery_date}\n"
                                 f"📍 Склад: {warehouse}\n"
                                 f"🏪 Маркетплейс: {marketplace}\n"
-                                f"📦 Груз: {data.get('pallet_quantity', 0)} паллет, {data.get('box_quantity', 0)} коробок\n"
+                                f"📦 Груз: {sender_pallet_qty} паллет, {sender_box_qty} коробок\n"
                                 f"💵 Ставка: {data.get('rate', '-')} руб.\n"
                                 f"👤 Отправитель: {data.get('sender_name')}\n"
                                 f"📱 Телефон: {data.get('phone')}\n"
@@ -2813,28 +2829,35 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                                 print(f"[ERROR] Failed to send match notification to carrier {carrier_chat_id}: {str(e)}")
             
             else:
-                # Перевозчик создал заявку - ищем отправителей с подходящей датой
-                loading_date = data.get('loading_date')
+                # Перевозчик создал заявку - ищем отправителей с подходящим грузом
+                arrival_date = data.get('arrival_date')
                 warehouse = data.get('warehouse')
                 marketplace = data.get('marketplace')
                 carrier_chat_id = data.get('chat_id')
+                carrier_pallet_cap = data.get('pallet_capacity', 0)
+                carrier_box_cap = data.get('box_capacity', 0)
                 
-                if not loading_date:
+                if not arrival_date:
                     return
                 
                 warehouse_norm = normalize_warehouse(warehouse)
                 cur.execute(
                     """
                     SELECT id, phone, sender_name, loading_address, 
-                           pallet_quantity, box_quantity, loading_date, loading_time, rate, warehouse, chat_id
+                           pallet_quantity, box_quantity, loading_date, loading_time, delivery_date, rate, warehouse, chat_id
                     FROM t_p52349012_telegram_bot_creatio.sender_orders
-                    WHERE loading_date = %s
+                    WHERE delivery_date = %s
                     AND (warehouse_normalized = %s OR warehouse = %s)
                     AND marketplace = %s
+                    AND (
+                        (%s >= pallet_quantity AND pallet_quantity > 0) OR
+                        (%s = 0 AND pallet_quantity = 0 AND %s >= box_quantity)
+                    )
                     ORDER BY id DESC
                     LIMIT 5
                     """,
-                    (loading_date, warehouse_norm, warehouse, marketplace)
+                    (arrival_date, warehouse_norm, warehouse, marketplace,
+                     carrier_pallet_cap, carrier_pallet_cap, carrier_box_cap)
                 )
                 
                 matches = cur.fetchall()
@@ -2843,7 +2866,7 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                     # Отправляем перевозчику список подходящих отправителей
                     if carrier_chat_id:
                         message = f"🎯 <b>Найдены подходящие отправители для вашей заявки #{order_id}!</b>\n\n"
-                        message += f"📅 Дата погрузки: {loading_date}\n"
+                        message += f"📅 Дата прибытия: {arrival_date}\n"
                         message += f"📍 Склад: {warehouse}\n\n"
                         
                         for i, match in enumerate(matches, 1):
@@ -2864,19 +2887,28 @@ def find_matching_orders_by_date(order_id: int, order_type: str, data: Dict[str,
                     # Отправляем отправителям уведомление о новом подходящем перевозчике
                     for match in matches:
                         sender_chat_id = match.get('chat_id')
+                        sender_pallet_qty = match.get('pallet_quantity', 0)
+                        sender_box_qty = match.get('box_quantity', 0)
                         
-                        if sender_chat_id:
+                        # Проверяем соответствие вместимости перевозчика грузу отправителя
+                        is_match = False
+                        if sender_pallet_qty > 0 and carrier_pallet_cap >= sender_pallet_qty:
+                            is_match = True
+                        elif sender_pallet_qty == 0 and carrier_pallet_cap == 0 and carrier_box_cap >= sender_box_qty:
+                            is_match = True
+                        
+                        if sender_chat_id and is_match:
                             sender_message = (
                                 f"🎯 <b>Найдена подходящая заявка перевозчика #{order_id}!</b>\n\n"
-                                f"📅 Дата погрузки: {loading_date}\n"
+                                f"📅 Дата прибытия: {arrival_date}\n"
                                 f"📍 Склад: {warehouse}\n"
                                 f"🏪 Маркетплейс: {marketplace}\n"
                                 f"🚗 Авто: {data.get('car_brand')} {data.get('car_model')}\n"
-                                f"📦 Вместимость: {data.get('pallet_capacity', 0)} паллет, {data.get('box_capacity', 0)} коробок\n"
+                                f"📦 Вместимость: {carrier_pallet_cap} паллет, {carrier_box_cap} коробок\n"
                                 f"🚚 Гидроборт: {data.get('hydroboard', '-')}\n"
                                 f"👤 Водитель: {data.get('driver_name')}\n"
                                 f"📱 Телефон: {data.get('phone')}\n"
-                                f"📅 Прибытие на склад: {data.get('arrival_date', '-')}"
+                                f"📅 Погрузка: {data.get('loading_date', '-')}"
                             )
                             
                             try:
