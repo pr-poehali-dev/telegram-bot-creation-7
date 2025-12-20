@@ -3165,3 +3165,295 @@ def unblock_user(admin_chat_id: int, target_chat_id: int):
                 pass
     finally:
         conn.close()
+
+
+def show_main_menu(chat_id: int):
+    user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
+    
+    keyboard_buttons = [
+        [{'text': '📦 Отправитель'}],
+        [{'text': '🚚 Перевозчик'}],
+        [{'text': '📋 Мои заявки'}]
+    ]
+    
+    send_message(
+        chat_id,
+        "👋 <b>Добро пожаловать!</b>\n\n"
+        "<b>Выберите услугу:</b>",
+        {
+            'keyboard': keyboard_buttons,
+            'resize_keyboard': True,
+            'one_time_keyboard': False
+        }
+    )
+
+
+def handle_message(chat_id: int, text: str, username: str):
+    state = user_states.get(chat_id, {})
+    step = state.get('step', '')
+    data = state.get('data', {})
+    
+    now = time.time()
+    if chat_id in user_states:
+        last_activity = user_states[chat_id].get('last_activity', now)
+        if now - last_activity > SESSION_TIMEOUT:
+            del user_states[chat_id]
+            send_message(chat_id, "⏱ Сессия истекла. Введите /start для начала")
+            return
+        user_states[chat_id]['last_activity'] = now
+    
+    if text == '/start':
+        show_main_menu(chat_id)
+        return
+    
+    if text == '/my_id':
+        send_message(chat_id, f"🆔 Ваш Chat ID: <code>{chat_id}</code>\n\n@{username}")
+        return
+    
+    if text == '/admin':
+        is_admin = check_admin_rights(chat_id)
+        if not is_admin:
+            send_message(chat_id, "❌ У вас нет прав администратора")
+            return
+        
+        perms = get_admin_permissions(chat_id)
+        role = perms.get('role', 'viewer')
+        
+        role_names = {
+            'owner': 'Владелец',
+            'admin': 'Администратор',
+            'moderator': 'Модератор',
+            'viewer': 'Наблюдатель'
+        }
+        role_text = role_names.get(role, role)
+        
+        admin_sessions[chat_id] = int(now)
+        
+        buttons = []
+        
+        if perms.get('can_view_stats'):
+            buttons.append([{'text': '📊 Статистика', 'callback_data': 'admin_stats'}])
+            buttons.append([{'text': '📈 Еженедельный отчёт', 'callback_data': 'admin_weekly'}])
+        
+        if perms.get('can_view_security_logs'):
+            buttons.append([{'text': '🔒 Логи безопасности', 'callback_data': 'admin_security_logs'}])
+        
+        if perms.get('can_block_users'):
+            buttons.append([{'text': '🚫 Заблокированные', 'callback_data': 'admin_blocked_users'}])
+        
+        if perms.get('can_manage_users'):
+            buttons.append([{'text': '⚙️ Установить лимит', 'callback_data': 'admin_set_limit'}])
+        
+        if perms.get('can_remove_orders'):
+            buttons.append([{'text': '🗑️ Удалить заявку', 'callback_data': 'admin_delete'}])
+            buttons.append([{'text': '🧹 Очистить старые заявки', 'callback_data': 'admin_cleanup'}])
+        
+        if perms.get('can_manage_admins'):
+            buttons.append([{'text': '👥 Управление админами', 'callback_data': 'admin_manage_admins'}])
+        
+        buttons.append([{'text': '🏠 Выйти из админ-панели', 'callback_data': 'admin_exit'}])
+        
+        send_message(
+            chat_id,
+            f"🔧 <b>Админ-панель</b>\n\n"
+            f"Ваша роль: {role_text}\n\n"
+            f"Выберите действие:",
+            {'inline_keyboard': buttons}
+        )
+        return
+    
+    if step == 'choose_service':
+        if 'отправитель' in text.lower():
+            state['step'] = 'sender_marketplace'
+            data['type'] = 'sender'
+            
+            keyboard_buttons = [[{'text': mp}] for mp in MARKETPLACES]
+            send_message(chat_id, "🏪 <b>Выберите маркетплейс</b>", {
+                'keyboard': keyboard_buttons,
+                'resize_keyboard': True,
+                'one_time_keyboard': True
+            })
+        
+        elif 'перевозчик' in text.lower():
+            state['step'] = 'carrier_marketplace'
+            data['type'] = 'carrier'
+            
+            keyboard_buttons = [[{'text': mp}] for mp in MARKETPLACES]
+            send_message(chat_id, "🏪 <b>Выберите маркетплейс</b>", {
+                'keyboard': keyboard_buttons,
+                'resize_keyboard': True,
+                'one_time_keyboard': True
+            })
+        
+        elif 'мои заявки' in text.lower():
+            show_my_orders(chat_id)
+        
+        return
+    
+    if step == 'sender_marketplace':
+        data['marketplace'] = text
+        state['step'] = 'sender_warehouse'
+        send_message(chat_id, "📍 <b>Укажите склад назначения</b>\n\nНапример: Подольск или Коледино")
+        return
+    
+    elif step == 'sender_warehouse':
+        data['warehouse'] = text
+        state['step'] = 'sender_loading_address'
+        send_message(chat_id, "🏠 <b>Укажите адрес ПОГРУЗКИ</b>\n\nНапример: г. Москва, ул. Ленина, д. 10")
+        return
+    
+    send_message(chat_id, "❌ Не понимаю команду. Введите /start")
+
+
+def handle_callback(chat_id: int, callback_data: str, message_id: int, callback_query_id: str):
+    answer_callback_query(callback_query_id)
+    
+    if callback_data == 'admin_stats':
+        show_admin_stats(chat_id)
+    
+    elif callback_data == 'admin_weekly':
+        show_weekly_stats(chat_id)
+    
+    elif callback_data == 'admin_security_logs':
+        show_security_logs(chat_id)
+    
+    elif callback_data == 'admin_blocked_users':
+        show_blocked_users(chat_id)
+    
+    elif callback_data == 'admin_cleanup':
+        cleanup_old_orders(chat_id)
+    
+    elif callback_data == 'admin_exit':
+        if chat_id in admin_sessions:
+            del admin_sessions[chat_id]
+        send_message(chat_id, "👋 Вы вышли из админ-панели")
+        show_main_menu(chat_id)
+
+
+def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    method = event.get('httpMethod', 'GET')
+    
+    if method == 'OPTIONS':
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Max-Age': '86400'
+            },
+            'isBase64Encoded': False,
+            'body': ''
+        }
+    
+    if method == 'GET':
+        return {
+            'statusCode': 200,
+            'headers': {'Content-Type': 'text/plain'},
+            'isBase64Encoded': False,
+            'body': 'Bot is running'
+        }
+    
+    if method == 'POST':
+        try:
+            source_ip = event.get('requestContext', {}).get('identity', {}).get('sourceIp', '')
+            if not is_telegram_request(source_ip):
+                log_security_event(0, 'invalid_source_ip', f'Request from non-Telegram IP: {source_ip}', 'high')
+                return {
+                    'statusCode': 403,
+                    'headers': {'Content-Type': 'application/json'},
+                    'isBase64Encoded': False,
+                    'body': json.dumps({'error': 'Forbidden'})
+                }
+            
+            body_str = event.get('body', '{}')
+            update = json.loads(body_str)
+            
+            if 'message' in update:
+                message = update['message']
+                chat_id = message['chat'].get('id')
+                text = message.get('text', '')
+                username = message['from'].get('username', 'unknown')
+                
+                if not chat_id:
+                    return {
+                        'statusCode': 200,
+                        'headers': {'Content-Type': 'application/json'},
+                        'isBase64Encoded': False,
+                        'body': json.dumps({'ok': True})
+                    }
+                
+                blocked = get_blocked_users()
+                if str(chat_id) in blocked:
+                    send_message(chat_id, "❌ Ваш аккаунт заблокирован. Обратитесь к администратору.")
+                    return {
+                        'statusCode': 200,
+                        'headers': {'Content-Type': 'application/json'},
+                        'isBase64Encoded': False,
+                        'body': json.dumps({'ok': True})
+                    }
+                
+                if is_rate_limited(chat_id):
+                    send_message(chat_id, "⏳ Слишком много запросов. Подождите немного.")
+                    log_security_event(chat_id, 'rate_limit_exceeded', f'User exceeded rate limit', 'medium')
+                    return {
+                        'statusCode': 200,
+                        'headers': {'Content-Type': 'application/json'},
+                        'isBase64Encoded': False,
+                        'body': json.dumps({'ok': True})
+                    }
+                
+                if not validate_text_length(text):
+                    send_message(chat_id, f"❌ Сообщение слишком длинное (макс {MAX_TEXT_LENGTH} символов)")
+                    log_security_event(chat_id, 'text_too_long', f'Message length: {len(text)}', 'low')
+                    return {
+                        'statusCode': 200,
+                        'headers': {'Content-Type': 'application/json'},
+                        'isBase64Encoded': False,
+                        'body': json.dumps({'ok': True})
+                    }
+                
+                handle_message(chat_id, text, username)
+            
+            elif 'callback_query' in update:
+                callback_query = update['callback_query']
+                chat_id = callback_query['from']['id']
+                callback_data = callback_query['data']
+                message_id = callback_query['message']['message_id']
+                
+                blocked = get_blocked_users()
+                if str(chat_id) in blocked:
+                    answer_callback_query(callback_query['id'], "❌ Ваш аккаунт заблокирован", True)
+                    return {
+                        'statusCode': 200,
+                        'headers': {'Content-Type': 'application/json'},
+                        'isBase64Encoded': False,
+                        'body': json.dumps({'ok': True})
+                    }
+                
+                handle_callback(chat_id, callback_data, message_id, callback_query['id'])
+            
+            return {
+                'statusCode': 200,
+                'headers': {'Content-Type': 'application/json'},
+                'isBase64Encoded': False,
+                'body': json.dumps({'ok': True})
+            }
+        
+        except Exception as e:
+            print(f"[ERROR] handler failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'statusCode': 500,
+                'headers': {'Content-Type': 'application/json'},
+                'isBase64Encoded': False,
+                'body': json.dumps({'error': str(e)})
+            }
+    
+    return {
+        'statusCode': 405,
+        'headers': {'Content-Type': 'application/json'},
+        'isBase64Encoded': False,
+        'body': json.dumps({'error': 'Method not allowed'})
+    }
