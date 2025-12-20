@@ -3413,7 +3413,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         'body': json.dumps({'ok': True})
                     }
                 
-                handle_message(chat_id, text, username)
+                process_message(chat_id, text, username)
             
             elif 'callback_query' in update:
                 callback_query = update['callback_query']
@@ -3431,7 +3431,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         'body': json.dumps({'ok': True})
                     }
                 
-                handle_callback(chat_id, callback_data, message_id, callback_query['id'])
+                answer_callback_query(callback_query['id'])
+                process_callback(chat_id, callback_data, message_id)
             
             return {
                 'statusCode': 200,
