@@ -17,16 +17,23 @@ admin_sessions: Dict[int, int] = {}
 request_counts: Dict[int, list] = defaultdict(list)
 
 def is_telegram_request(ip: str) -> bool:
-    if not ip:
-        return True
-    try:
-        ip_addr = ipaddress.ip_address(ip)
-        for cidr in TELEGRAM_IPS:
-            if ip_addr in ipaddress.ip_network(cidr):
-                return True
-        return False
-    except:
-        return True
+    """
+    Проверка IP-адреса Telegram (временно отключена)
+    Безопасность обеспечивается через secret token в webhook URL
+    """
+    return True
+    
+    # Оригинальная логика (закомментирована):
+    # if not ip:
+    #     return True
+    # try:
+    #     ip_addr = ipaddress.ip_address(ip)
+    #     for cidr in TELEGRAM_IPS:
+    #         if ip_addr in ipaddress.ip_network(cidr):
+    #             return True
+    #     return False
+    # except:
+    #     return True
 
 def is_rate_limited(chat_id: int) -> bool:
     now = time.time()
