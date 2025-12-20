@@ -393,36 +393,27 @@ def show_templates_management(chat_id: int):
         )
         return
     
-    message = "💾 <b>Ваши шаблоны:</b>\n\n"
-    buttons = []
+    send_message(chat_id, "💾 <b>Ваши шаблоны:</b>")
     
-    for i, template in enumerate(templates):
+    for template in templates:
         template_id = template['id']
         template_name = template['template_name']
         order_type = template['order_type']
         emoji = '📦' if order_type == 'sender' else '🚚'
         order_type_ru = 'Отправитель' if order_type == 'sender' else 'Перевозчик'
         
-        message += f"{emoji} <b>{template_name}</b>\n"
-        message += f"   Тип: {order_type_ru}\n\n"
+        template_text = f"{emoji} <b>{template_name}</b>\nТип: {order_type_ru}"
         
-        buttons.append([
-            {'text': f'✅ Использовать', 'callback_data': f'use_template_{template_id}'}
-        ])
-        buttons.append([
-            {'text': f'🗑 Удалить', 'callback_data': f'delete_template_{template_id}'}
-        ])
+        keyboard = {
+            'inline_keyboard': [
+                [
+                    {'text': '✅ Использовать', 'callback_data': f'use_template_{template_id}'},
+                    {'text': '🗑 Удалить', 'callback_data': f'delete_template_{template_id}'}
+                ]
+            ]
+        }
         
-        if i < len(templates) - 1:
-            buttons.append([{'text': '—————————', 'callback_data': 'ignore'}])
-    
-    message += "💡 Выберите действие для нужного шаблона"
-    
-    send_message(
-        chat_id,
-        message,
-        {'inline_keyboard': buttons}
-    )
+        send_message(chat_id, template_text, keyboard)
 
 
 def show_main_menu(chat_id: int):
@@ -834,8 +825,7 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
     elif callback_data.startswith('delete_template_'):
         template_id = int(callback_data.replace('delete_template_', ''))
         if delete_template(chat_id, template_id):
-            send_message(chat_id, "✅ Шаблон удалён!")
-            show_templates_management(chat_id)
+            delete_message(chat_id, message_id)
         else:
             send_message(chat_id, "❌ Ошибка удаления шаблона")
         return
