@@ -977,6 +977,119 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         )
 
 
+def go_back_step(chat_id: int, state: Dict[str, Any], data: Dict[str, Any]):
+    """Возврат на предыдущий шаг"""
+    current_step = state.get('step')
+    user_type = data.get('type')
+    
+    # Маппинг шагов для отправителей
+    sender_back_steps = {
+        'choose_marketplace': ('choose_service', show_main_menu),
+        'sender_warehouse': ('choose_marketplace', lambda cid: send_marketplace_keyboard(cid, 'sender')),
+        'sender_loading_city': ('sender_warehouse', lambda cid: send_message(cid, "📍 <b>Укажите склад назначения</b>\n\nНапример: Электросталь", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'sender_loading_address': ('sender_loading_city', lambda cid: send_message(cid, "🏙 <b>Укажите город или населенный пункт погрузки</b>\n\nНапример: Москва, Санкт-Петербург, Самара", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'sender_loading_date': ('sender_loading_address', lambda cid: send_message(cid, "🏠 <b>Укажите адрес ПОГРУЗКИ</b>\n\nНапример: ул. Ленина, д. 10", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'sender_loading_time': ('sender_loading_date', lambda cid: send_date_keyboard(cid, "📅 <b>Укажите дату ПОГРУЗКИ</b>")),
+        'sender_delivery_date': ('sender_loading_time', lambda cid: send_message(cid, "🕐 <b>Укажите время ПОГРУЗКИ</b>\n\nФормат: ЧЧ:ММ\nНапример: 14:30", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'sender_pallet_quantity': ('sender_delivery_date', lambda cid: send_date_keyboard(cid, "📅 <b>Укажите дату ПОСТАВКИ на склад</b>")),
+        'sender_box_quantity': ('sender_pallet_quantity', lambda cid: send_message(cid, "📦 <b>Укажите количество ПАЛЛЕТ</b>", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'sender_name': ('sender_box_quantity', lambda cid: send_message(cid, "📦 <b>Укажите количество КОРОБОК</b>", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'sender_phone': ('sender_name', lambda cid: send_message(cid, "👤 <b>Укажите ФИО отправителя</b>", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'sender_rate': ('sender_phone', lambda cid: send_message(cid, "📱 <b>Укажите номер телефона</b>", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+    }
+    
+    # Маппинг шагов для перевозчиков
+    carrier_back_steps = {
+        'choose_marketplace': ('choose_service', show_main_menu),
+        'carrier_warehouse': ('choose_marketplace', lambda cid: send_marketplace_keyboard(cid, 'carrier')),
+        'carrier_car_brand': ('carrier_warehouse', lambda cid: send_message(cid, "📍 <b>Укажите склад назначения</b>\n\nНапример: Электросталь", {
+            'keyboard': [[{'text': '📦 Любой склад'}], [{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'carrier_car_model': ('carrier_car_brand', lambda cid: send_message(cid, "🚗 <b>Укажите марку автомобиля</b>\n\nНапример: Mercedes, Volvo", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'carrier_license_plate': ('carrier_car_model', lambda cid: send_message(cid, "🚗 <b>Укажите модель автомобиля</b>\n\nНапример: Actros, FH", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'carrier_pallet_capacity': ('carrier_license_plate', lambda cid: send_message(cid, "🔢 <b>Укажите гос. номер</b>\n\nНапример: А123ВС77", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'carrier_box_capacity': ('carrier_pallet_capacity', lambda cid: send_message(cid, "📦 <b>Укажите вместимость ПАЛЛЕТ</b>", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'carrier_hydroboard': ('carrier_box_capacity', lambda cid: send_message(cid, "📦 <b>Укажите вместимость КОРОБОК</b>", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'carrier_loading_city': ('carrier_hydroboard', lambda cid: send_message(cid, "🚚 <b>Гидроборт</b>", {
+            'keyboard': [[{'text': 'Есть'}], [{'text': 'Нету'}], [{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'carrier_loading_date': ('carrier_loading_city', lambda cid: send_message(cid, "🏙 <b>Укажите город или населенный пункт погрузки</b>", {
+            'keyboard': [[{'text': '🌐 Любой город'}], [{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+        'carrier_arrival_date': ('carrier_loading_date', lambda cid: send_date_keyboard(cid, "📅 <b>Укажите желаемую дату ПОГРУЗКИ</b>")),
+        'carrier_driver_name': ('carrier_arrival_date', lambda cid: send_date_keyboard(cid, "📅 <b>Укажите дату прибытия на склад</b>")),
+        'carrier_phone': ('carrier_driver_name', lambda cid: send_message(cid, "👤 <b>Укажите ФИО водителя</b>", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })),
+    }
+    
+    back_steps = sender_back_steps if user_type == 'sender' else carrier_back_steps
+    
+    if current_step in back_steps:
+        prev_step, callback = back_steps[current_step]
+        state['step'] = prev_step
+        callback(chat_id)
+    else:
+        send_message(chat_id, "Невозможно вернуться назад на этом шаге. Используйте /start для начала")
+
+
+def send_marketplace_keyboard(chat_id: int, user_type: str):
+    """Отправить клавиатуру с маркетплейсами"""
+    keyboard = [[{'text': mp}] for mp in MARKETPLACES]
+    keyboard.append([{'text': '⬅️ Назад'}])
+    send_message(
+        chat_id,
+        "🏪 <b>Выберите маркетплейс:</b>",
+        {'keyboard': keyboard, 'resize_keyboard': True, 'one_time_keyboard': True}
+    )
+
+
+def send_date_keyboard(chat_id: int, message: str):
+    """Отправить клавиатуру с выбором даты"""
+    today = datetime.now()
+    tomorrow = today + timedelta(days=1)
+    send_message(
+        chat_id,
+        message,
+        {
+            'keyboard': [
+                [{'text': f"🔴 Сегодня ({today.strftime('%d.%m.%Y')})"}],
+                [{'text': f"🟢 Завтра ({tomorrow.strftime('%d.%m.%Y')})"}],
+                [{'text': 'Ввести дату'}],
+                [{'text': '⬅️ Назад'}]
+            ],
+            'resize_keyboard': True,
+            'one_time_keyboard': True
+        }
+    )
+
+
 def process_message(chat_id: int, text: str, username: str = 'unknown'):
     if text.startswith('/unblock '):
         if str(chat_id) != ADMIN_CHAT_ID:
@@ -1466,14 +1579,21 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         if save_template(chat_id, template_name, order_type, data):
             send_message(
                 chat_id,
-                f"✅ <b>Шаблон '{template_name}' сохранён!</b>\n\nТеперь вы можете найти его в разделе 'Мои шаблоны'."
+                f"✅ <b>Шаблон '{template_name}' сохранён!</b>\n\nТеперь вы можете найти его в разделе 'Мои шаблоны'.",
+                {'remove_keyboard': True}
             )
-            show_preview(chat_id, data)
+            if chat_id in user_states:
+                del user_states[chat_id]
+            show_main_menu(chat_id)
         else:
             send_message(
                 chat_id,
                 "❌ Ошибка сохранения шаблона. Попробуйте ещё раз или обратитесь к администратору."
             )
+        return
+    
+    if '⬅️ Назад' in text or text.strip() == 'Назад':
+        go_back_step(chat_id, state, data)
         return
     
     if step == 'choose_service':
@@ -1511,7 +1631,9 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         
         if data['type'] == 'sender':
             state['step'] = 'sender_warehouse'
-            send_message(chat_id, "📍 <b>Укажите склад назначения</b>\n\nНапример: Электросталь", {'remove_keyboard': True})
+            send_message(chat_id, "📍 <b>Укажите склад назначения</b>\n\nНапример: Электросталь", {
+                'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+            })
         else:
             state['step'] = 'carrier_warehouse'
             send_message(
@@ -1525,14 +1647,21 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             )
     
     elif step == 'sender_warehouse':
+        if '⬅️' in text or text.strip() == 'Назад':
+            go_back_step(chat_id, state, data)
+            return
         data['warehouse'] = text
         state['step'] = 'sender_loading_city'
-        send_message(chat_id, "🏙 <b>Укажите город или населенный пункт погрузки</b>\n\nНапример: Москва, Санкт-Петербург, Самара", {'remove_keyboard': True})
+        send_message(chat_id, "🏙 <b>Укажите город или населенный пункт погрузки</b>\n\nНапример: Москва, Санкт-Петербург, Самара", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })
     
     elif step == 'sender_loading_city':
         data['loading_city'] = text
         state['step'] = 'sender_loading_address'
-        send_message(chat_id, "🏠 <b>Укажите адрес ПОГРУЗКИ</b>\n\nНапример: ул. Ленина, д. 10")
+        send_message(chat_id, "🏠 <b>Укажите адрес ПОГРУЗКИ</b>\n\nНапример: ул. Ленина, д. 10", {
+            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        })
     
     elif step == 'sender_loading_address':
         data['loading_address'] = text
@@ -1547,7 +1676,8 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
                 'keyboard': [
                     [{'text': f"🔴 Сегодня ({today.strftime('%d.%m.%Y')})"}],
                     [{'text': f"🟢 Завтра ({tomorrow.strftime('%d.%m.%Y')})"}],
-                    [{'text': 'Ввести дату'}]
+                    [{'text': 'Ввести дату'}],
+                    [{'text': '⬅️ Назад'}]
                 ],
                 'resize_keyboard': True,
                 'one_time_keyboard': True
@@ -1584,7 +1714,9 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
                 )
             
             state['step'] = 'sender_loading_time'
-            send_message(chat_id, "🕐 <b>Укажите время ПОГРУЗКИ</b>\n\nФормат: ЧЧ:ММ\nНапример: 14:30", {'remove_keyboard': True})
+            send_message(chat_id, "🕐 <b>Укажите время ПОГРУЗКИ</b>\n\nФормат: ЧЧ:ММ\nНапример: 14:30", {
+                'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+            })
         except ValueError:
             send_message(chat_id, "❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ")
     

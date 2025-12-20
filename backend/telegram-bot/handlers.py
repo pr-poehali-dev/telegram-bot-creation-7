@@ -38,7 +38,7 @@ def show_main_menu(chat_id: int):
         keyboard_buttons.append([{'text': '💾 Мои шаблоны'}])
         for template in templates[:5]:
             template_name = template['template_name']
-            emoji = '📦' if template['order_type'] == 'sender' else '🚚'
+            emoji = '📦' if template.get('template_type') == 'sender' else '🚚'
             keyboard_buttons.insert(0, [{'text': f"{emoji} {template_name}"}])
     
     send_message(
