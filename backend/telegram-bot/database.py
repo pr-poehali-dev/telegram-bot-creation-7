@@ -10,8 +10,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
 
-# Импорт констант
-MAX_ORDERS_PER_DAY = 10
+from constants import MAX_ORDERS_PER_DAY
 
 def normalize_warehouse(warehouse: str) -> str:
     """Нормализует название склада для fuzzy matching"""

@@ -38,66 +38,6 @@ MAX_TEXT_LENGTH = 500
 MAX_ORDERS_PER_DAY = 10
 TELEGRAM_IPS = ['149.154.160.0/20', '91.108.4.0/22', '185.178.208.0/22']
 
-def normalize_warehouse(warehouse: str) -> str:
-    """Нормализует название склада для fuzzy matching"""
-    if not warehouse:
-        return ''
-    
-    # Приводим к нижнему регистру
-    normalized = warehouse.lower().strip()
-    
-    # Убираем лишние пробелы
-    normalized = ' '.join(normalized.split())
-    
-    # Общие замены для частых опечаток
-    replacements = {
-        'коледино': 'каледино',
-        'электросталь': 'електросталь',
-        'подольск': 'падольск',
-        'щелково': 'щолково',
-        'чехов': 'чихов',
-        'е': 'е',  # ё -> е
-        'ё': 'е'
-    }
-    
-    for wrong, correct in replacements.items():
-        normalized = normalized.replace(wrong, correct)
-    
-    # Убираем все кроме букв, цифр и пробелов
-    normalized = ''.join(c for c in normalized if c.isalnum() or c.isspace())
-    
-    return normalized
-
-def is_telegram_request(ip: str) -> bool:
-    if not ip:
-        return True
-    try:
-        ip_addr = ipaddress.ip_address(ip)
-        for cidr in TELEGRAM_IPS:
-            if ip_addr in ipaddress.ip_network(cidr):
-                return True
-        return False
-    except:
-        return True
-
-
-def is_rate_limited(chat_id: int) -> bool:
-    now = time.time()
-    requests_list = request_counts[chat_id]
-    
-    requests_list = [req for req in requests_list if now - req < 60]
-    request_counts[chat_id] = requests_list
-    
-    if len(requests_list) >= MAX_REQUESTS_PER_MINUTE:
-        return True
-    
-    requests_list.append(now)
-    return False
-
-
-def validate_text_length(text: str, max_length: int = MAX_TEXT_LENGTH) -> bool:
-    return len(text) <= max_length
-
 
 def log_security_event(chat_id: int, event_type: str, details: str, severity: str = 'medium'):
     try:
