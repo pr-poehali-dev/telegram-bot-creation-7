@@ -1522,31 +1522,13 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
     elif step == 'sender_rate':
         if text.isdigit():
             data['rate'] = int(text)
-            state['step'] = 'sender_label_size'
-            send_message(
-                chat_id,
-                "🏷️ <b>Выберите термоэтикетку с инфо для водителя</b>",
-                {
-                    'keyboard': [
-                        [{'text': '120x75 мм'}],
-                        [{'text': '58x40 мм'}]
-                    ],
-                    'resize_keyboard': True,
-                    'one_time_keyboard': True
-                }
-            )
+            data['label_size'] = '120x75'
+            state['step'] = 'show_preview'
+            show_preview(chat_id, data)
         else:
             send_message(chat_id, "❌ Неверный формат. Укажите цифру. Например: 5000")
     
-    elif step == 'sender_label_size':
-        if '120' in text:
-            data['label_size'] = '120x75'
-        else:
-            data['label_size'] = '58x40'
-        
-        send_message(chat_id, "📋 Термоэтикетка будет отправлена после создания заявки")
-        state['step'] = 'show_preview'
-        show_preview(chat_id, data)
+
     
     elif step == 'carrier_warehouse':
         if 'любой' in text.lower():
@@ -2546,7 +2528,6 @@ def send_notifications_to_subscribers(order_id: int, order_type: str, data: Dict
             target_user_type = 'carrier' if order_type == 'sender' else 'sender'
             warehouse = data.get('warehouse', '')
             
-            warehouse_norm = normalize_warehouse(warehouse)
             cur.execute(
                 """
                 SELECT DISTINCT us.chat_id, us.warehouse_filter 
@@ -2554,10 +2535,9 @@ def send_notifications_to_subscribers(order_id: int, order_type: str, data: Dict
                 WHERE us.user_type = %s
                 AND (us.subscription_type = 'all' 
                      OR (us.subscription_type = 'warehouse' 
-                         AND (us.warehouse_filter = %s 
-                              OR %s = ANY(SELECT normalize_warehouse(us.warehouse_filter)))))
+                         AND us.warehouse_filter = %s))
                 """,
-                (target_user_type, warehouse, warehouse_norm)
+                (target_user_type, warehouse)
             )
             
             subscribers = cur.fetchall()
