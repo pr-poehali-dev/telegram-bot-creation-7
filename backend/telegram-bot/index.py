@@ -2316,9 +2316,6 @@ def show_my_orders(chat_id: int):
                     keyboard = {
                         'inline_keyboard': [
                             [
-                                {'text': '✏️ Редактировать', 'callback_data': f"edit_order_sender_{order['id']}"}
-                            ],
-                            [
                                 {'text': '🗑️ Удалить', 'callback_data': f"delete_order_sender_{order['id']}"}
                             ]
                         ]
@@ -2333,9 +2330,6 @@ def show_my_orders(chat_id: int):
                     order_text = f"#{order['id']} - {order.get('marketplace', '-')} → {order.get('warehouse', '-')} ({loading} - {arrival})"
                     keyboard = {
                         'inline_keyboard': [
-                            [
-                                {'text': '✏️ Редактировать', 'callback_data': f"edit_order_carrier_{order['id']}"}
-                            ],
                             [
                                 {'text': '🗑️ Удалить', 'callback_data': f"delete_order_carrier_{order['id']}"}
                             ]
@@ -2356,7 +2350,6 @@ def delete_user_order(chat_id: int, order_id: int, order_type: str):
                 (order_id, chat_id)
             )
             conn.commit()
-            show_my_orders(chat_id)
     finally:
         conn.close()
 
