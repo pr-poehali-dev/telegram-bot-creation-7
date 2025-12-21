@@ -3659,15 +3659,16 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     
     if method == 'POST':
         try:
-            source_ip = event.get('requestContext', {}).get('identity', {}).get('sourceIp', '')
-            if not is_telegram_request(source_ip):
-                log_security_event(0, 'invalid_source_ip', f'Request from non-Telegram IP: {source_ip}', 'high')
-                return {
-                    'statusCode': 403,
-                    'headers': {'Content-Type': 'application/json'},
-                    'isBase64Encoded': False,
-                    'body': json.dumps({'error': 'Forbidden'})
-                }
+            # IP проверка отключена для Cloud Functions (всегда показывает IP облака, а не Telegram)
+            # source_ip = event.get('requestContext', {}).get('identity', {}).get('sourceIp', '')
+            # if not is_telegram_request(source_ip):
+            #     log_security_event(0, 'invalid_source_ip', f'Request from non-Telegram IP: {source_ip}', 'high')
+            #     return {
+            #         'statusCode': 403,
+            #         'headers': {'Content-Type': 'application/json'},
+            #         'isBase64Encoded': False,
+            #         'body': json.dumps({'error': 'Forbidden'})
+            #     }
             
             body_str = event.get('body', '{}')
             update = json.loads(body_str)
