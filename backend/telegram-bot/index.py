@@ -3428,41 +3428,39 @@ def show_all_orders_for_admin(chat_id: int, filter_type: str = 'all'):
                 send_message(chat_id, "📭 Нет заявок в системе")
                 return
             
+            # Отправляем каждую заявку отдельным сообщением с кнопкой удалить под ней
             if sender_orders:
-                message = "📦 <b>Заявки отправителей (последние 20):</b>\n\n"
+                send_message(chat_id, f"📦 <b>Заявки отправителей (последние {len(sender_orders)}):</b>")
                 for order in sender_orders:
-                    message += (
+                    message = (
                         f"#{order['id']} | {order['marketplace']} → {order['warehouse']}\n"
                         f"📅 {order['loading_date']} | 👤 {order['contact_name']}\n"
-                        f"📱 {order['phone']} | Chat ID: <code>{order['chat_id']}</code>\n\n"
+                        f"📱 {order['phone']} | Chat ID: <code>{order['chat_id']}</code>"
                     )
-                
-                buttons = []
-                for order in sender_orders:
-                    buttons.append([{
+                    
+                    buttons = [[{
                         'text': f"🗑 Удалить #{order['id']} ({order['marketplace']})",
                         'callback_data': f"admin_del_s_{order['id']}_{order['chat_id']}"
-                    }])
-                
-                send_message(chat_id, message, {'inline_keyboard': buttons})
+                    }]]
+                    
+                    send_message(chat_id, message, {'inline_keyboard': buttons})
             
             if carrier_orders:
-                message = "🚚 <b>Заявки перевозчиков (последние 20):</b>\n\n"
+                send_message(chat_id, f"🚚 <b>Заявки перевозчиков (последние {len(carrier_orders)}):</b>")
                 for order in carrier_orders:
-                    message += (
-                        f"#{order['id']} | {order['marketplace']} → {order['warehouse']}\n"
+                    marketplace = order.get('marketplace') or 'None'
+                    message = (
+                        f"#{order['id']} | {marketplace} → {order['warehouse']}\n"
                         f"📅 {order['loading_date']} | 👤 {order['contact_name']}\n"
-                        f"📱 {order['phone']} | Chat ID: <code>{order['chat_id']}</code>\n\n"
+                        f"📱 {order['phone']} | Chat ID: <code>{order['chat_id']}</code>"
                     )
-                
-                buttons = []
-                for order in carrier_orders:
-                    buttons.append([{
-                        'text': f"🗑 Удалить #{order['id']} ({order['marketplace']})",
+                    
+                    buttons = [[{
+                        'text': f"🗑 Удалить #{order['id']} ({marketplace})",
                         'callback_data': f"admin_del_c_{order['id']}_{order['chat_id']}"
-                    }])
-                
-                send_message(chat_id, message, {'inline_keyboard': buttons})
+                    }]]
+                    
+                    send_message(chat_id, message, {'inline_keyboard': buttons})
     finally:
         conn.close()
 
