@@ -972,7 +972,8 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         return
     
     elif callback_data.startswith('admin_'):
-        if str(chat_id) != ADMIN_CHAT_ID:
+        perms = get_admin_permissions(chat_id)
+        if not perms:
             send_message(chat_id, "❌ У вас нет прав администратора")
             return
         
@@ -1003,6 +1004,34 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         elif callback_data == 'admin_set_limit':
             state['admin_action'] = 'set_limit'
             send_message(chat_id, "📝 Введите Chat ID пользователя и новый лимит через пробел\n\nНапример: 123456789 50")
+        elif callback_data.startswith('admin_del_s_') or callback_data.startswith('admin_del_c_'):
+            parts = callback_data.split('_')
+            order_type = parts[2]
+            order_id = int(parts[3])
+            user_chat_id = int(parts[4])
+            confirm_delete_order(chat_id, order_id, order_type, user_chat_id)
+        elif callback_data.startswith('admin_del_one_'):
+            parts = callback_data.split('_')
+            order_type = parts[3]
+            order_id = int(parts[4])
+            delete_order_admin(chat_id, order_id, order_type)
+            show_all_orders_for_admin(chat_id)
+        elif callback_data.startswith('admin_del_all_'):
+            user_chat_id = int(callback_data.split('_')[3])
+            delete_all_user_orders(chat_id, user_chat_id)
+        elif callback_data == 'admin_filter_sender':
+            show_all_orders_for_admin(chat_id, 'sender')
+        elif callback_data == 'admin_filter_carrier':
+            show_all_orders_for_admin(chat_id, 'carrier')
+        elif callback_data == 'admin_filter_all':
+            show_all_orders_for_admin(chat_id, 'all')
+        elif callback_data == 'admin_search_chatid':
+            state = user_states.get(chat_id, {})
+            state['admin_action'] = 'search_chatid'
+            user_states[chat_id] = state
+            send_message(chat_id, "🔍 Введите Chat ID пользователя для поиска его заявок:")
+        elif callback_data == 'admin_exit_to_main':
+            show_admin_panel(chat_id, perms)
     
     elif callback_data.startswith('delete_order_'):
         order_id = int(callback_data.replace('delete_order_', ''))
@@ -3428,7 +3457,7 @@ def show_all_orders_for_admin(chat_id: int, filter_type: str = 'all'):
                 send_message(chat_id, "📭 Нет заявок в системе")
                 return
             
-            # Отправляем каждую заявку отдельным сообщением с кнопкой удалить под ней
+            # Отправляем каждую заявку отдельным сообщением с двумя кнопками под ней
             if sender_orders:
                 send_message(chat_id, f"📦 <b>Заявки отправителей (последние {len(sender_orders)}):</b>")
                 for order in sender_orders:
@@ -3438,10 +3467,16 @@ def show_all_orders_for_admin(chat_id: int, filter_type: str = 'all'):
                         f"📱 {order['phone']} | Chat ID: <code>{order['chat_id']}</code>"
                     )
                     
-                    buttons = [[{
-                        'text': f"🗑 Удалить #{order['id']} ({order['marketplace']})",
-                        'callback_data': f"admin_del_s_{order['id']}_{order['chat_id']}"
-                    }]]
+                    buttons = [
+                        [{
+                            'text': f"🗑 Удалить #{order['id']}",
+                            'callback_data': f"admin_del_s_{order['id']}_{order['chat_id']}"
+                        }],
+                        [{
+                            'text': f"🗑🗑 Удалить все от Chat ID: {order['chat_id']}",
+                            'callback_data': f"admin_del_all_{order['chat_id']}"
+                        }]
+                    ]
                     
                     send_message(chat_id, message, {'inline_keyboard': buttons})
             
@@ -3455,10 +3490,16 @@ def show_all_orders_for_admin(chat_id: int, filter_type: str = 'all'):
                         f"📱 {order['phone']} | Chat ID: <code>{order['chat_id']}</code>"
                     )
                     
-                    buttons = [[{
-                        'text': f"🗑 Удалить #{order['id']} ({marketplace})",
-                        'callback_data': f"admin_del_c_{order['id']}_{order['chat_id']}"
-                    }]]
+                    buttons = [
+                        [{
+                            'text': f"🗑 Удалить #{order['id']}",
+                            'callback_data': f"admin_del_c_{order['id']}_{order['chat_id']}"
+                        }],
+                        [{
+                            'text': f"🗑🗑 Удалить все от Chat ID: {order['chat_id']}",
+                            'callback_data': f"admin_del_all_{order['chat_id']}"
+                        }]
+                    ]
                     
                     send_message(chat_id, message, {'inline_keyboard': buttons})
     finally:
