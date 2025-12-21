@@ -993,8 +993,7 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         elif callback_data == 'admin_weekly':
             show_weekly_stats(chat_id)
         elif callback_data == 'admin_delete':
-            state['admin_action'] = 'delete'
-            send_message(chat_id, "📝 Введите ID заявки для удаления (например: 123)")
+            show_all_orders_for_admin(chat_id)
         elif callback_data == 'admin_cleanup':
             cleanup_old_orders(chat_id)
         elif callback_data == 'admin_security_logs':
