@@ -2518,6 +2518,16 @@ def show_admin_stats(chat_id: int):
             cur.execute("SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.blocked_users")
             blocked_count = cur.fetchone()[0]
             
+            # Подсчёт уникальных пользователей
+            cur.execute("""
+                SELECT COUNT(DISTINCT chat_id) FROM (
+                    SELECT chat_id FROM t_p52349012_telegram_bot_creatio.sender_orders
+                    UNION
+                    SELECT chat_id FROM t_p52349012_telegram_bot_creatio.carrier_orders
+                ) AS users
+            """)
+            total_users = cur.fetchone()[0]
+            
             cur.execute("""
                 SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.sender_orders 
                 WHERE loading_date < CURRENT_DATE - INTERVAL '1 day'
@@ -2526,6 +2536,7 @@ def show_admin_stats(chat_id: int):
             
             stats_text = (
                 f"📊 <b>Статистика бота</b>\n\n"
+                f"👥 <b>Всего пользователей: {total_users}</b>\n\n"
                 f"📦 Заявок отправителей: {sender_count}\n"
                 f"🚚 Заявок перевозчиков: {carrier_count}\n"
                 f"🚫 Заблокировано пользователей: {blocked_count}\n"
@@ -3444,12 +3455,11 @@ def handle_message(chat_id: int, text: str, username: str):
         return
     
     if text == '/admin':
-        is_admin = check_admin_rights(chat_id)
-        if not is_admin:
+        perms = get_admin_permissions(chat_id)
+        if not perms:
             send_message(chat_id, "❌ У вас нет прав администратора")
             return
         
-        perms = get_admin_permissions(chat_id)
         role = perms.get('role', 'viewer')
         
         role_names = {
