@@ -107,32 +107,43 @@ def log_security_event(chat_id: int, event_type: str, details: str, severity: st
     try:
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO t_p52349012_telegram_bot_creatio.security_logs (chat_id, event_type, details, severity) VALUES (%s, %s, %s, %s)", (chat_id, event_type, details, severity))
+            event_type_escaped = event_type.replace("'", "''")
+            details_escaped = details.replace("'", "''")
+            severity_escaped = severity.replace("'", "''")
+            query = f"INSERT INTO t_p52349012_telegram_bot_creatio.security_logs (chat_id, event_type, details, severity) VALUES ({chat_id}, '{event_type_escaped}', '{details_escaped}', '{severity_escaped}')"
+            cur.execute(query)
             conn.commit()
         conn.close()
-    except:
+    except Exception as e:
+        print(f"[ERROR] log_security_event: {str(e)}")
         pass
 
 def auto_block_user(chat_id: int, reason: str):
     try:
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO t_p52349012_telegram_bot_creatio.auto_blocked_users (chat_id, reason) VALUES (%s, %s) ON CONFLICT (chat_id) DO UPDATE SET reason = %s, blocked_at = CURRENT_TIMESTAMP", (chat_id, reason, reason))
-            cur.execute("INSERT INTO t_p52349012_telegram_bot_creatio.blocked_users (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING", (chat_id,))
+            reason_escaped = reason.replace("'", "''")
+            query1 = f"INSERT INTO t_p52349012_telegram_bot_creatio.auto_blocked_users (chat_id, reason) VALUES ({chat_id}, '{reason_escaped}') ON CONFLICT (chat_id) DO UPDATE SET reason = '{reason_escaped}', blocked_at = CURRENT_TIMESTAMP"
+            query2 = f"INSERT INTO t_p52349012_telegram_bot_creatio.blocked_users (chat_id) VALUES ({chat_id}) ON CONFLICT (chat_id) DO NOTHING"
+            cur.execute(query1)
+            cur.execute(query2)
             conn.commit()
         conn.close()
         log_security_event(chat_id, 'auto_block', reason, 'high')
-    except:
+    except Exception as e:
+        print(f"[ERROR] auto_block_user: {str(e)}")
         pass
 
 def is_user_blocked(chat_id: int) -> bool:
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT chat_id FROM t_p52349012_telegram_bot_creatio.blocked_users WHERE chat_id = %s", (chat_id,))
+            query = f"SELECT chat_id FROM t_p52349012_telegram_bot_creatio.blocked_users WHERE chat_id = {chat_id}"
+            cur.execute(query)
             result = cur.fetchone() is not None
         return result
-    except:
+    except Exception as e:
+        print(f"[ERROR] is_user_blocked: {str(e)}")
         return False
     finally:
         conn.close()
@@ -152,10 +163,12 @@ def get_user_daily_limit(chat_id: int) -> int:
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT daily_order_limit FROM t_p52349012_telegram_bot_creatio.user_limits WHERE chat_id = %s", (chat_id,))
+            query = f"SELECT daily_order_limit FROM t_p52349012_telegram_bot_creatio.user_limits WHERE chat_id = {chat_id}"
+            cur.execute(query)
             result = cur.fetchone()
             return result[0] if result else MAX_ORDERS_PER_DAY
-    except:
+    except Exception as e:
+        print(f"[ERROR] get_user_daily_limit: {str(e)}")
         return MAX_ORDERS_PER_DAY
     finally:
         conn.close()
@@ -164,9 +177,11 @@ def get_user_orders_today(chat_id: int) -> int:
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM (SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE chat_id = %s AND created_at::date = CURRENT_DATE UNION ALL SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE chat_id = %s AND created_at::date = CURRENT_DATE) AS combined", (chat_id, chat_id))
+            query = f"SELECT COUNT(*) FROM (SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE chat_id = {chat_id} AND created_at::date = CURRENT_DATE UNION ALL SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE chat_id = {chat_id} AND created_at::date = CURRENT_DATE) AS combined"
+            cur.execute(query)
             return cur.fetchone()[0]
-    except:
+    except Exception as e:
+        print(f"[ERROR] get_user_orders_today: {str(e)}")
         return 0
     finally:
         conn.close()
@@ -175,7 +190,8 @@ def get_admin_permissions(chat_id: int) -> Optional[Dict[str, bool]]:
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT ba.role, ap.* FROM t_p52349012_telegram_bot_creatio.bot_admins ba LEFT JOIN t_p52349012_telegram_bot_creatio.admin_permissions ap ON ba.id = ap.admin_id WHERE ba.chat_id = %s AND ba.is_active = true", (chat_id,))
+            query = f"SELECT ba.role, ap.* FROM t_p52349012_telegram_bot_creatio.bot_admins ba LEFT JOIN t_p52349012_telegram_bot_creatio.admin_permissions ap ON ba.id = ap.admin_id WHERE ba.chat_id = {chat_id} AND ba.is_active = true"
+            cur.execute(query)
             result = cur.fetchone()
             if not result:
                 return None
@@ -183,7 +199,8 @@ def get_admin_permissions(chat_id: int) -> Optional[Dict[str, bool]]:
             if role == 'owner':
                 return {'role': 'owner', 'can_view_stats': True, 'can_view_orders': True, 'can_remove_orders': True, 'can_manage_users': True, 'can_block_users': True, 'can_manage_admins': True, 'can_view_security_logs': True}
             return {'role': role, 'can_view_stats': result.get('can_view_stats', True), 'can_view_orders': result.get('can_view_orders', True), 'can_remove_orders': result.get('can_remove_orders', False), 'can_manage_users': result.get('can_manage_users', False), 'can_block_users': result.get('can_block_users', False), 'can_manage_admins': result.get('can_manage_admins', False), 'can_view_security_logs': result.get('can_view_security_logs', False)}
-    except:
+    except Exception as e:
+        print(f"[ERROR] get_admin_permissions: {str(e)}")
         return None
     finally:
         conn.close()
@@ -195,17 +212,20 @@ def check_suspicious_activity(chat_id: int) -> bool:
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.security_logs WHERE chat_id = %s AND created_at > NOW() - INTERVAL '1 hour'", (chat_id,))
+            query1 = f"SELECT COUNT(*) FROM t_p52349012_telegram_bot_creatio.security_logs WHERE chat_id = {chat_id} AND created_at > NOW() - INTERVAL '1 hour'"
+            cur.execute(query1)
             events_last_hour = cur.fetchone()[0]
             if events_last_hour > 50:
                 return True
-            cur.execute("SELECT COUNT(*) FROM (SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE chat_id = %s AND created_at::date = CURRENT_DATE UNION ALL SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE chat_id = %s AND created_at::date = CURRENT_DATE) AS combined", (chat_id, chat_id))
+            query2 = f"SELECT COUNT(*) FROM (SELECT id FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE chat_id = {chat_id} AND created_at::date = CURRENT_DATE UNION ALL SELECT id FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE chat_id = {chat_id} AND created_at::date = CURRENT_DATE) AS combined"
+            cur.execute(query2)
             orders_today = cur.fetchone()[0]
             user_limit = get_user_daily_limit(chat_id)
             if orders_today > user_limit * 2:
                 return True
             return False
-    except:
+    except Exception as e:
+        print(f"[ERROR] check_suspicious_activity: {str(e)}")
         return False
     finally:
         conn.close()
@@ -214,9 +234,11 @@ def get_user_templates(chat_id: int) -> List[Dict[str, Any]]:
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, template_name, order_type as template_type, template_data, created_at FROM t_p52349012_telegram_bot_creatio.order_templates WHERE chat_id = %s ORDER BY created_at DESC", (chat_id,))
+            query = f"SELECT id, template_name, order_type, template_data, created_at FROM t_p52349012_telegram_bot_creatio.order_templates WHERE chat_id = {chat_id} ORDER BY created_at DESC"
+            cur.execute(query)
             return [dict(row) for row in cur.fetchall()]
-    except:
+    except Exception as e:
+        print(f"[ERROR] get_user_templates: {str(e)}")
         return []
     finally:
         conn.close()
@@ -225,7 +247,11 @@ def save_template(chat_id: int, template_name: str, order_type: str, data: Dict[
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO t_p52349012_telegram_bot_creatio.order_templates (chat_id, template_name, order_type, template_data) VALUES (%s, %s, %s, %s) ON CONFLICT (chat_id, template_name) DO UPDATE SET order_type = EXCLUDED.order_type, template_data = EXCLUDED.template_data", (chat_id, template_name, order_type, json.dumps(data)))
+            template_name_escaped = template_name.replace("'", "''")
+            order_type_escaped = order_type.replace("'", "''")
+            data_json = json.dumps(data).replace("'", "''")
+            query = f"INSERT INTO t_p52349012_telegram_bot_creatio.order_templates (chat_id, template_name, order_type, template_data) VALUES ({chat_id}, '{template_name_escaped}', '{order_type_escaped}', '{data_json}') ON CONFLICT (chat_id, template_name) DO UPDATE SET order_type = EXCLUDED.order_type, template_data = EXCLUDED.template_data"
+            cur.execute(query)
             conn.commit()
             return True
     except Exception as e:
@@ -239,10 +265,12 @@ def delete_template(chat_id: int, template_id: int) -> bool:
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM t_p52349012_telegram_bot_creatio.order_templates WHERE id = %s AND chat_id = %s", (template_id, chat_id))
+            query = f"DELETE FROM t_p52349012_telegram_bot_creatio.order_templates WHERE id = {template_id} AND chat_id = {chat_id}"
+            cur.execute(query)
             conn.commit()
             return True
-    except:
+    except Exception as e:
+        print(f"[ERROR] delete_template failed: {str(e)}")
         conn.rollback()
         return False
     finally:
@@ -252,10 +280,12 @@ def get_template_by_id(template_id: int, chat_id: int) -> Optional[Dict[str, Any
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, template_name, order_type as template_type, template_data, created_at FROM t_p52349012_telegram_bot_creatio.order_templates WHERE id = %s AND chat_id = %s", (template_id, chat_id))
+            query = f"SELECT id, template_name, order_type, template_data, created_at FROM t_p52349012_telegram_bot_creatio.order_templates WHERE id = {template_id} AND chat_id = {chat_id}"
+            cur.execute(query)
             result = cur.fetchone()
             return dict(result) if result else None
-    except:
+    except Exception as e:
+        print(f"[ERROR] get_template_by_id failed: {str(e)}")
         return None
     finally:
         conn.close()
