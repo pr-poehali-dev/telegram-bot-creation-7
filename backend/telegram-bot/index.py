@@ -3355,16 +3355,101 @@ def show_blocked_users(chat_id: int):
         conn.close()
 
 
-def delete_order_admin(chat_id: int, order_id: int):
+def show_all_orders_for_admin(chat_id: int):
+    """Показать все заявки для удаления администратором"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT 'sender' as type, id, chat_id, marketplace, warehouse, loading_date, 
+                       created_at, phone, sender_name as contact_name
+                FROM t_p52349012_telegram_bot_creatio.sender_orders
+                ORDER BY created_at DESC
+                LIMIT 20
+            """)
+            sender_orders = cur.fetchall()
+            
+            cur.execute("""
+                SELECT 'carrier' as type, id, chat_id, marketplace, warehouse, loading_date, 
+                       created_at, phone, driver_name as contact_name
+                FROM t_p52349012_telegram_bot_creatio.carrier_orders
+                ORDER BY created_at DESC
+                LIMIT 20
+            """)
+            carrier_orders = cur.fetchall()
+            
+            if not sender_orders and not carrier_orders:
+                send_message(chat_id, "📭 Нет заявок в системе")
+                return
+            
+            if sender_orders:
+                message = "📦 <b>Заявки отправителей (последние 20):</b>\n\n"
+                for order in sender_orders:
+                    message += (
+                        f"#{order['id']} | {order['marketplace']} → {order['warehouse']}\n"
+                        f"📅 {order['loading_date']} | 👤 {order['contact_name']}\n"
+                        f"📱 {order['phone']} | Chat ID: <code>{order['chat_id']}</code>\n\n"
+                    )
+                
+                buttons = []
+                for order in sender_orders:
+                    buttons.append([{
+                        'text': f"🗑 Удалить #{order['id']} ({order['marketplace']})",
+                        'callback_data': f"admin_del_s_{order['id']}_{order['chat_id']}"
+                    }])
+                
+                send_message(chat_id, message, {'inline_keyboard': buttons})
+            
+            if carrier_orders:
+                message = "🚚 <b>Заявки перевозчиков (последние 20):</b>\n\n"
+                for order in carrier_orders:
+                    message += (
+                        f"#{order['id']} | {order['marketplace']} → {order['warehouse']}\n"
+                        f"📅 {order['loading_date']} | 👤 {order['contact_name']}\n"
+                        f"📱 {order['phone']} | Chat ID: <code>{order['chat_id']}</code>\n\n"
+                    )
+                
+                buttons = []
+                for order in carrier_orders:
+                    buttons.append([{
+                        'text': f"🗑 Удалить #{order['id']} ({order['marketplace']})",
+                        'callback_data': f"admin_del_c_{order['id']}_{order['chat_id']}"
+                    }])
+                
+                send_message(chat_id, message, {'inline_keyboard': buttons})
+    finally:
+        conn.close()
+
+
+def confirm_delete_order(admin_chat_id: int, order_id: int, order_type: str, user_chat_id: int):
+    """Спросить у админа: удалить одну заявку или все заявки пользователя"""
+    buttons = [
+        [{'text': f'🗑 Удалить только заявку #{order_id}', 'callback_data': f'admin_del_one_{order_type}_{order_id}'}],
+        [{'text': f'🗑🗑 Удалить ВСЕ заявки пользователя {user_chat_id}', 'callback_data': f'admin_del_all_{user_chat_id}'}],
+        [{'text': '❌ Отмена', 'callback_data': 'admin_delete'}]
+    ]
+    
+    send_message(
+        admin_chat_id,
+        f"⚠️ <b>Подтвердите удаление:</b>\n\n"
+        f"Заявка: #{order_id} ({order_type})\n"
+        f"Пользователь: <code>{user_chat_id}</code>\n\n"
+        f"Выберите действие:",
+        {'inline_keyboard': buttons}
+    )
+
+
+def delete_order_admin(chat_id: int, order_id: int, order_type: str):
+    """Удалить одну заявку"""
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s",
-                (order_id,)
-            )
-            
-            if cur.rowcount == 0:
+            if order_type == 's':
+                cur.execute(
+                    "DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s",
+                    (order_id,)
+                )
+            else:
                 cur.execute(
                     "DELETE FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE id = %s",
                     (order_id,)
@@ -3376,6 +3461,45 @@ def delete_order_admin(chat_id: int, order_id: int):
                 send_message(chat_id, f"✅ Заявка #{order_id} удалена администратором")
             else:
                 send_message(chat_id, f"❌ Заявка #{order_id} не найдена")
+    finally:
+        conn.close()
+
+
+def delete_all_user_orders(admin_chat_id: int, user_chat_id: int):
+    """Удалить все заявки пользователя"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE chat_id = %s",
+                (user_chat_id,)
+            )
+            sender_deleted = cur.rowcount
+            
+            cur.execute(
+                "DELETE FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE chat_id = %s",
+                (user_chat_id,)
+            )
+            carrier_deleted = cur.rowcount
+            
+            conn.commit()
+            
+            total_deleted = sender_deleted + carrier_deleted
+            
+            if total_deleted > 0:
+                send_message(
+                    admin_chat_id,
+                    f"✅ Удалено {total_deleted} заявок пользователя <code>{user_chat_id}</code>\n"
+                    f"📦 Отправителей: {sender_deleted}\n"
+                    f"🚚 Перевозчиков: {carrier_deleted}"
+                )
+                
+                try:
+                    send_message(user_chat_id, "⚠️ Все ваши заявки удалены администратором")
+                except:
+                    pass
+            else:
+                send_message(admin_chat_id, f"❌ У пользователя {user_chat_id} нет заявок")
     finally:
         conn.close()
 
@@ -3625,6 +3749,27 @@ def handle_callback(chat_id: int, callback_data: str, message_id: int, callback_
     
     elif callback_data == 'admin_cleanup':
         cleanup_old_orders(chat_id)
+    
+    elif callback_data == 'admin_delete':
+        show_all_orders_for_admin(chat_id)
+    
+    elif callback_data.startswith('admin_del_s_') or callback_data.startswith('admin_del_c_'):
+        parts = callback_data.split('_')
+        order_type = parts[2]
+        order_id = int(parts[3])
+        user_chat_id = int(parts[4])
+        confirm_delete_order(chat_id, order_id, order_type, user_chat_id)
+    
+    elif callback_data.startswith('admin_del_one_'):
+        parts = callback_data.split('_')
+        order_type = parts[3]
+        order_id = int(parts[4])
+        delete_order_admin(chat_id, order_id, order_type)
+        show_all_orders_for_admin(chat_id)
+    
+    elif callback_data.startswith('admin_del_all_'):
+        user_chat_id = int(callback_data.split('_')[3])
+        delete_all_user_orders(chat_id, user_chat_id)
     
     elif callback_data == 'admin_exit':
         if chat_id in admin_sessions:
