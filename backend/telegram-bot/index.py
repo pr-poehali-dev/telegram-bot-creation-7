@@ -1015,21 +1015,36 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
             state['admin_action'] = 'set_limit'
             send_message(chat_id, "📝 Введите Chat ID пользователя и новый лимит через пробел\n\nНапример: 123456789 50")
         elif callback_data.startswith('admin_del_s_') or callback_data.startswith('admin_del_c_'):
-            print(f"[DEBUG] Delete button clicked: {callback_data}")
-            parts = callback_data.split('_')
-            order_type = parts[2]
-            order_id = int(parts[3])
-            user_chat_id = int(parts[4])
-            print(f"[DEBUG] Parsed: order_type={order_type}, order_id={order_id}, user_chat_id={user_chat_id}")
-            confirm_delete_order(chat_id, order_id, order_type, user_chat_id)
+            try:
+                print(f"[DEBUG] Delete button clicked: {callback_data}")
+                parts = callback_data.split('_')
+                order_type = parts[2]
+                order_id = int(parts[3])
+                user_chat_id = int(parts[4])
+                print(f"[DEBUG] Parsed: order_type={order_type}, order_id={order_id}, user_chat_id={user_chat_id}")
+                confirm_delete_order(chat_id, order_id, order_type, user_chat_id)
+                print(f"[DEBUG] confirm_delete_order completed successfully")
+            except Exception as e:
+                print(f"[ERROR] Failed to process delete button: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                send_message(chat_id, f"❌ Ошибка при удалении: {str(e)}")
         elif callback_data.startswith('admin_del_one_'):
-            print(f"[DEBUG] Confirm delete button clicked: {callback_data}")
-            parts = callback_data.split('_')
-            order_type = parts[3]
-            order_id = int(parts[4])
-            print(f"[DEBUG] Parsed: order_type={order_type}, order_id={order_id}")
-            delete_order_admin(chat_id, order_id, order_type)
-            show_all_orders_for_admin(chat_id)
+            try:
+                print(f"[DEBUG] Confirm delete button clicked: {callback_data}")
+                parts = callback_data.split('_')
+                order_type = parts[3]
+                order_id = int(parts[4])
+                print(f"[DEBUG] Parsed: order_type={order_type}, order_id={order_id}")
+                delete_order_admin(chat_id, order_id, order_type)
+                print(f"[DEBUG] delete_order_admin completed, showing orders list")
+                show_all_orders_for_admin(chat_id)
+                print(f"[DEBUG] show_all_orders_for_admin completed")
+            except Exception as e:
+                print(f"[ERROR] Failed to confirm delete: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                send_message(chat_id, f"❌ Ошибка при удалении: {str(e)}")
         elif callback_data.startswith('admin_del_all_'):
             user_chat_id = int(callback_data.split('_')[3])
             delete_all_user_orders(chat_id, user_chat_id)
@@ -3522,13 +3537,17 @@ def show_all_orders_for_admin(chat_id: int, filter_type: str = 'all'):
 
 def confirm_delete_order(admin_chat_id: int, order_id: int, order_type: str, user_chat_id: int):
     """Спросить у админа: удалить одну заявку или все заявки пользователя"""
+    print(f"[DEBUG] confirm_delete_order: admin_chat_id={admin_chat_id}, order_id={order_id}, order_type={order_type}, user_chat_id={user_chat_id}")
+    
     buttons = [
         [{'text': f'🗑 Удалить только заявку #{order_id}', 'callback_data': f'admin_del_one_{order_type}_{order_id}'}],
         [{'text': f'🗑🗑 Удалить ВСЕ заявки пользователя {user_chat_id}', 'callback_data': f'admin_del_all_{user_chat_id}'}],
         [{'text': '❌ Отмена', 'callback_data': 'admin_delete'}]
     ]
     
-    send_message(
+    print(f"[DEBUG] Sending confirmation message with buttons: {buttons}")
+    
+    result = send_message(
         admin_chat_id,
         f"⚠️ <b>Подтвердите удаление:</b>\n\n"
         f"Заявка: #{order_id} ({order_type})\n"
@@ -3536,6 +3555,8 @@ def confirm_delete_order(admin_chat_id: int, order_id: int, order_type: str, use
         f"Выберите действие:",
         {'inline_keyboard': buttons}
     )
+    
+    print(f"[DEBUG] Confirmation message sent, result: {result}")
 
 
 def delete_order_admin(admin_chat_id: int, order_id: int, order_type: str):
