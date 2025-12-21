@@ -3526,19 +3526,7 @@ def handle_message(chat_id: int, text: str, username: str):
         
         return
     
-    if step == 'sender_marketplace':
-        data['marketplace'] = text
-        state['step'] = 'sender_warehouse'
-        send_message(chat_id, "📍 <b>Укажите склад назначения</b>\n\nНапример: Подольск или Коледино")
-        return
-    
-    elif step == 'sender_warehouse':
-        data['warehouse'] = text
-        state['step'] = 'sender_loading_address'
-        send_message(chat_id, "🏠 <b>Укажите адрес ПОГРУЗКИ</b>\n\nНапример: г. Москва, ул. Ленина, д. 10")
-        return
-    
-    send_message(chat_id, "❌ Не понимаю команду. Введите /start")
+    process_message(chat_id, text, username)
 
 
 def handle_callback(chat_id: int, callback_data: str, message_id: int, callback_query_id: str):
