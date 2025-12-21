@@ -190,12 +190,19 @@ def get_admin_permissions(chat_id: int) -> Optional[Dict[str, bool]]:
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            query = f"SELECT ba.role, ap.* FROM t_p52349012_telegram_bot_creatio.bot_admins ba LEFT JOIN t_p52349012_telegram_bot_creatio.admin_permissions ap ON ba.id = ap.admin_id WHERE ba.chat_id = {chat_id} AND ba.is_active = true"
-            cur.execute(query)
+            cur.execute("""
+                SELECT ba.role, ap.* 
+                FROM t_p52349012_telegram_bot_creatio.bot_admins ba 
+                LEFT JOIN t_p52349012_telegram_bot_creatio.admin_permissions ap 
+                ON ba.id = ap.admin_id 
+                WHERE ba.chat_id = %s AND ba.is_active = true
+            """, (chat_id,))
             result = cur.fetchone()
             if not result:
+                print(f"[DEBUG] get_admin_permissions: No admin found for chat_id={chat_id}")
                 return None
             role = result.get('role', 'viewer')
+            print(f"[DEBUG] get_admin_permissions: Found admin chat_id={chat_id}, role={role}")
             if role == 'owner':
                 return {'role': 'owner', 'can_view_stats': True, 'can_view_orders': True, 'can_remove_orders': True, 'can_manage_users': True, 'can_block_users': True, 'can_manage_admins': True, 'can_view_security_logs': True}
             return {'role': role, 'can_view_stats': result.get('can_view_stats', True), 'can_view_orders': result.get('can_view_orders', True), 'can_remove_orders': result.get('can_remove_orders', False), 'can_manage_users': result.get('can_manage_users', False), 'can_block_users': result.get('can_block_users', False), 'can_manage_admins': result.get('can_manage_admins', False), 'can_view_security_logs': result.get('can_view_security_logs', False)}
@@ -972,8 +979,11 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
         return
     
     elif callback_data.startswith('admin_'):
+        print(f"[DEBUG] Admin callback received: {callback_data} from chat_id={chat_id}")
         perms = get_admin_permissions(chat_id)
+        print(f"[DEBUG] Admin permissions: {perms}")
         if not perms:
+            print(f"[DEBUG] No permissions found, sending error message")
             send_message(chat_id, "❌ У вас нет прав администратора")
             return
         
@@ -1005,15 +1015,19 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
             state['admin_action'] = 'set_limit'
             send_message(chat_id, "📝 Введите Chat ID пользователя и новый лимит через пробел\n\nНапример: 123456789 50")
         elif callback_data.startswith('admin_del_s_') or callback_data.startswith('admin_del_c_'):
+            print(f"[DEBUG] Delete button clicked: {callback_data}")
             parts = callback_data.split('_')
             order_type = parts[2]
             order_id = int(parts[3])
             user_chat_id = int(parts[4])
+            print(f"[DEBUG] Parsed: order_type={order_type}, order_id={order_id}, user_chat_id={user_chat_id}")
             confirm_delete_order(chat_id, order_id, order_type, user_chat_id)
         elif callback_data.startswith('admin_del_one_'):
+            print(f"[DEBUG] Confirm delete button clicked: {callback_data}")
             parts = callback_data.split('_')
             order_type = parts[3]
             order_id = int(parts[4])
+            print(f"[DEBUG] Parsed: order_type={order_type}, order_id={order_id}")
             delete_order_admin(chat_id, order_id, order_type)
             show_all_orders_for_admin(chat_id)
         elif callback_data.startswith('admin_del_all_'):
@@ -3526,6 +3540,7 @@ def confirm_delete_order(admin_chat_id: int, order_id: int, order_type: str, use
 
 def delete_order_admin(admin_chat_id: int, order_id: int, order_type: str):
     """Удалить одну заявку"""
+    print(f"[DEBUG] delete_order_admin called: order_id={order_id}, order_type={order_type}, admin_chat_id={admin_chat_id}")
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
