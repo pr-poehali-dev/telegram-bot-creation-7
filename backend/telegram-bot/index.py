@@ -3524,17 +3524,31 @@ def confirm_delete_order(admin_chat_id: int, order_id: int, order_type: str, use
     )
 
 
-def delete_order_admin(chat_id: int, order_id: int, order_type: str):
+def delete_order_admin(admin_chat_id: int, order_id: int, order_type: str):
     """Удалить одну заявку"""
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
             if order_type == 's':
+                cur.execute(
+                    "SELECT chat_id FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s",
+                    (order_id,)
+                )
+                result = cur.fetchone()
+                user_chat_id = result['chat_id'] if result else None
+                
                 cur.execute(
                     "DELETE FROM t_p52349012_telegram_bot_creatio.sender_orders WHERE id = %s",
                     (order_id,)
                 )
             else:
+                cur.execute(
+                    "SELECT chat_id FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE id = %s",
+                    (order_id,)
+                )
+                result = cur.fetchone()
+                user_chat_id = result['chat_id'] if result else None
+                
                 cur.execute(
                     "DELETE FROM t_p52349012_telegram_bot_creatio.carrier_orders WHERE id = %s",
                     (order_id,)
@@ -3543,9 +3557,15 @@ def delete_order_admin(chat_id: int, order_id: int, order_type: str):
             conn.commit()
             
             if cur.rowcount > 0:
-                send_message(chat_id, f"✅ Заявка #{order_id} удалена администратором")
+                send_message(admin_chat_id, f"✅ Заявка #{order_id} удалена")
+                
+                if user_chat_id:
+                    try:
+                        send_message(user_chat_id, f"⚠️ Ваша заявка #{order_id} удалена администратором")
+                    except:
+                        pass
             else:
-                send_message(chat_id, f"❌ Заявка #{order_id} не найдена")
+                send_message(admin_chat_id, f"❌ Заявка #{order_id} не найдена")
     finally:
         conn.close()
 
