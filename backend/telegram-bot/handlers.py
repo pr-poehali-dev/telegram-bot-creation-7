@@ -74,6 +74,7 @@ def handle_sender_start(chat_id: int):
 def show_marketplace_selection(chat_id: int):
     """Показать выбор маркетплейса"""
     keyboard_buttons = [[{'text': mp}] for mp in MARKETPLACES]
+    keyboard_buttons.append([{'text': '⬅️ Назад'}])
     
     send_message(
         chat_id,
