@@ -682,19 +682,33 @@ def process_callback(chat_id: int, callback_data: str, message_id: int):
     if callback_data == 'ignore':
         return
     
-    if chat_id not in user_states:
-        send_message(chat_id, "Сессия истекла. Введите /start для начала")
-        return
+    # Пропускаем проверку сессии для админских команд
+    is_admin_action = (
+        callback_data.startswith('admin_') or 
+        callback_data in ['show_terms', 'show_privacy']
+    )
     
-    state = user_states[chat_id]
-    
-    if time.time() - state.get('last_activity', 0) > SESSION_TIMEOUT:
-        del user_states[chat_id]
-        send_message(chat_id, "⏰ Сессия истекла (6 часов). Введите /start для начала")
-        return
-    
-    state['last_activity'] = time.time()
-    data = state.get('data', {})
+    if not is_admin_action:
+        if chat_id not in user_states:
+            send_message(chat_id, "Сессия истекла. Введите /start для начала")
+            return
+        
+        state = user_states[chat_id]
+        
+        if time.time() - state.get('last_activity', 0) > SESSION_TIMEOUT:
+            del user_states[chat_id]
+            send_message(chat_id, "⏰ Сессия истекла (6 часов). Введите /start для начала")
+            return
+        
+        state['last_activity'] = time.time()
+        data = state.get('data', {})
+    else:
+        # Для админов создаём временный state если его нет
+        if chat_id not in user_states:
+            user_states[chat_id] = {'step': 'admin_mode', 'data': {}, 'last_activity': time.time()}
+        state = user_states[chat_id]
+        state['last_activity'] = time.time()
+        data = state.get('data', {})
     
     if callback_data.startswith('set_role_'):
         role = callback_data.replace('set_role_', '')
@@ -1570,6 +1584,14 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
                 send_message(chat_id, f"✅ Лимит для пользователя {target_chat_id} установлен: {new_limit} заявок/день")
             except ValueError:
                 send_message(chat_id, "❌ Неверный формат. Используйте: Chat_ID Лимит")
+        
+        elif action == 'search_chatid':
+            try:
+                search_chat_id = int(text.strip())
+                search_orders_by_chatid(chat_id, search_chat_id)
+            except ValueError:
+                send_message(chat_id, "❌ Неверный формат Chat ID. Введите число:")
+                return
         
         if 'admin_action' in state:
             del state['admin_action']
@@ -3355,28 +3377,53 @@ def show_blocked_users(chat_id: int):
         conn.close()
 
 
-def show_all_orders_for_admin(chat_id: int):
+def show_all_orders_for_admin(chat_id: int, filter_type: str = 'all'):
     """Показать все заявки для удаления администратором"""
+    
+    # Отправляем меню фильтров
+    filter_buttons = [
+        [
+            {'text': '📦 Только отправители', 'callback_data': 'admin_filter_sender'},
+            {'text': '🚚 Только перевозчики', 'callback_data': 'admin_filter_carrier'}
+        ],
+        [
+            {'text': '📅 Все заявки', 'callback_data': 'admin_filter_all'},
+            {'text': '🔍 Поиск по Chat ID', 'callback_data': 'admin_search_chatid'}
+        ],
+        [{'text': '🏠 Вернуться в админ-панель', 'callback_data': 'admin_exit_to_main'}]
+    ]
+    
+    send_message(
+        chat_id,
+        "🗑️ <b>Управление заявками</b>\n\nВыберите фильтр или поиск:",
+        {'inline_keyboard': filter_buttons}
+    )
+    
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT 'sender' as type, id, chat_id, marketplace, warehouse, loading_date, 
-                       created_at, phone, sender_name as contact_name
-                FROM t_p52349012_telegram_bot_creatio.sender_orders
-                ORDER BY created_at DESC
-                LIMIT 20
-            """)
-            sender_orders = cur.fetchall()
+            sender_orders = []
+            carrier_orders = []
             
-            cur.execute("""
-                SELECT 'carrier' as type, id, chat_id, marketplace, warehouse, loading_date, 
-                       created_at, phone, driver_name as contact_name
-                FROM t_p52349012_telegram_bot_creatio.carrier_orders
-                ORDER BY created_at DESC
-                LIMIT 20
-            """)
-            carrier_orders = cur.fetchall()
+            if filter_type in ['all', 'sender']:
+                cur.execute("""
+                    SELECT 'sender' as type, id, chat_id, marketplace, warehouse, loading_date, 
+                           created_at, phone, sender_name as contact_name
+                    FROM t_p52349012_telegram_bot_creatio.sender_orders
+                    ORDER BY created_at DESC
+                    LIMIT 20
+                """)
+                sender_orders = cur.fetchall()
+            
+            if filter_type in ['all', 'carrier']:
+                cur.execute("""
+                    SELECT 'carrier' as type, id, chat_id, marketplace, warehouse, loading_date, 
+                           created_at, phone, driver_name as contact_name
+                    FROM t_p52349012_telegram_bot_creatio.carrier_orders
+                    ORDER BY created_at DESC
+                    LIMIT 20
+                """)
+                carrier_orders = cur.fetchall()
             
             if not sender_orders and not carrier_orders:
                 send_message(chat_id, "📭 Нет заявок в системе")
@@ -3465,6 +3512,70 @@ def delete_order_admin(chat_id: int, order_id: int, order_type: str):
         conn.close()
 
 
+def search_orders_by_chatid(admin_chat_id: int, search_chat_id: int):
+    """Поиск всех заявок конкретного пользователя"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT 'sender' as type, id, chat_id, marketplace, warehouse, loading_date, 
+                       created_at, phone, sender_name as contact_name
+                FROM t_p52349012_telegram_bot_creatio.sender_orders
+                WHERE chat_id = %s
+                ORDER BY created_at DESC
+            """, (search_chat_id,))
+            sender_orders = cur.fetchall()
+            
+            cur.execute("""
+                SELECT 'carrier' as type, id, chat_id, marketplace, warehouse, loading_date, 
+                       created_at, phone, driver_name as contact_name
+                FROM t_p52349012_telegram_bot_creatio.carrier_orders
+                WHERE chat_id = %s
+                ORDER BY created_at DESC
+            """, (search_chat_id,))
+            carrier_orders = cur.fetchall()
+            
+            if not sender_orders and not carrier_orders:
+                send_message(admin_chat_id, f"📭 У пользователя <code>{search_chat_id}</code> нет заявок")
+                return
+            
+            total_orders = len(sender_orders) + len(carrier_orders)
+            message = f"🔍 <b>Найдено {total_orders} заявок пользователя <code>{search_chat_id}</code>:</b>\n\n"
+            
+            buttons = []
+            
+            if sender_orders:
+                message += f"📦 <b>Отправитель ({len(sender_orders)}):</b>\n"
+                for order in sender_orders:
+                    message += (
+                        f"#{order['id']} | {order['marketplace']} → {order['warehouse']}\n"
+                        f"📅 {order['loading_date']} | 👤 {order['contact_name']}\n\n"
+                    )
+                    buttons.append([{
+                        'text': f"🗑 #{order['id']} - {order['marketplace']}",
+                        'callback_data': f"admin_del_s_{order['id']}_{order['chat_id']}"
+                    }])
+            
+            if carrier_orders:
+                message += f"\n🚚 <b>Перевозчик ({len(carrier_orders)}):</b>\n"
+                for order in carrier_orders:
+                    message += (
+                        f"#{order['id']} | {order['marketplace']} → {order['warehouse']}\n"
+                        f"📅 {order['loading_date']} | 👤 {order['contact_name']}\n\n"
+                    )
+                    buttons.append([{
+                        'text': f"🗑 #{order['id']} - {order['marketplace']}",
+                        'callback_data': f"admin_del_c_{order['id']}_{order['chat_id']}"
+                    }])
+            
+            buttons.append([{'text': '🗑🗑 Удалить ВСЕ заявки этого пользователя', 'callback_data': f'admin_del_all_{search_chat_id}'}])
+            buttons.append([{'text': '◀️ Назад к списку', 'callback_data': 'admin_delete'}])
+            
+            send_message(admin_chat_id, message, {'inline_keyboard': buttons})
+    finally:
+        conn.close()
+
+
 def delete_all_user_orders(admin_chat_id: int, user_chat_id: int):
     """Удалить все заявки пользователя"""
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
@@ -3534,6 +3645,53 @@ def unblock_user(admin_chat_id: int, target_chat_id: int):
         conn.close()
 
 
+def show_admin_panel(chat_id: int, perms: Dict[str, Any]):
+    """Показать админ-панель с кнопками"""
+    role = perms.get('role', 'viewer')
+    
+    role_names = {
+        'owner': 'Владелец',
+        'admin': 'Администратор',
+        'moderator': 'Модератор',
+        'viewer': 'Наблюдатель'
+    }
+    role_text = role_names.get(role, role)
+    
+    admin_sessions[chat_id] = int(time.time())
+    
+    buttons = []
+    
+    if perms.get('can_view_stats'):
+        buttons.append([{'text': '📊 Статистика', 'callback_data': 'admin_stats'}])
+        buttons.append([{'text': '📈 Еженедельный отчёт', 'callback_data': 'admin_weekly'}])
+    
+    if perms.get('can_view_security_logs'):
+        buttons.append([{'text': '🔒 Логи безопасности', 'callback_data': 'admin_security_logs'}])
+    
+    if perms.get('can_block_users'):
+        buttons.append([{'text': '🚫 Заблокированные', 'callback_data': 'admin_blocked_users'}])
+    
+    if perms.get('can_manage_users'):
+        buttons.append([{'text': '⚙️ Установить лимит', 'callback_data': 'admin_set_limit'}])
+    
+    if perms.get('can_remove_orders'):
+        buttons.append([{'text': '🗑️ Удалить заявку', 'callback_data': 'admin_delete'}])
+        buttons.append([{'text': '🧹 Очистить старые заявки', 'callback_data': 'admin_cleanup'}])
+    
+    if perms.get('can_manage_admins'):
+        buttons.append([{'text': '👥 Управление админами', 'callback_data': 'admin_manage_admins'}])
+    
+    buttons.append([{'text': '🏠 Выйти из админ-панели', 'callback_data': 'admin_exit'}])
+    
+    send_message(
+        chat_id,
+        f"🔧 <b>Админ-панель</b>\n\n"
+        f"Ваша роль: {role_text}\n\n"
+        f"Выберите действие:",
+        {'inline_keyboard': buttons}
+    )
+
+
 def show_main_menu(chat_id: int):
     user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
     
@@ -3584,49 +3742,7 @@ def handle_message(chat_id: int, text: str, username: str):
             send_message(chat_id, "❌ У вас нет прав администратора")
             return
         
-        role = perms.get('role', 'viewer')
-        
-        role_names = {
-            'owner': 'Владелец',
-            'admin': 'Администратор',
-            'moderator': 'Модератор',
-            'viewer': 'Наблюдатель'
-        }
-        role_text = role_names.get(role, role)
-        
-        admin_sessions[chat_id] = int(now)
-        
-        buttons = []
-        
-        if perms.get('can_view_stats'):
-            buttons.append([{'text': '📊 Статистика', 'callback_data': 'admin_stats'}])
-            buttons.append([{'text': '📈 Еженедельный отчёт', 'callback_data': 'admin_weekly'}])
-        
-        if perms.get('can_view_security_logs'):
-            buttons.append([{'text': '🔒 Логи безопасности', 'callback_data': 'admin_security_logs'}])
-        
-        if perms.get('can_block_users'):
-            buttons.append([{'text': '🚫 Заблокированные', 'callback_data': 'admin_blocked_users'}])
-        
-        if perms.get('can_manage_users'):
-            buttons.append([{'text': '⚙️ Установить лимит', 'callback_data': 'admin_set_limit'}])
-        
-        if perms.get('can_remove_orders'):
-            buttons.append([{'text': '🗑️ Удалить заявку', 'callback_data': 'admin_delete'}])
-            buttons.append([{'text': '🧹 Очистить старые заявки', 'callback_data': 'admin_cleanup'}])
-        
-        if perms.get('can_manage_admins'):
-            buttons.append([{'text': '👥 Управление админами', 'callback_data': 'admin_manage_admins'}])
-        
-        buttons.append([{'text': '🏠 Выйти из админ-панели', 'callback_data': 'admin_exit'}])
-        
-        send_message(
-            chat_id,
-            f"🔧 <b>Админ-панель</b>\n\n"
-            f"Ваша роль: {role_text}\n\n"
-            f"Выберите действие:",
-            {'inline_keyboard': buttons}
-        )
+        show_admin_panel(chat_id, perms)
         return
     
     if step == 'choose_service':
@@ -3770,6 +3886,26 @@ def handle_callback(chat_id: int, callback_data: str, message_id: int, callback_
     elif callback_data.startswith('admin_del_all_'):
         user_chat_id = int(callback_data.split('_')[3])
         delete_all_user_orders(chat_id, user_chat_id)
+    
+    elif callback_data == 'admin_filter_sender':
+        show_all_orders_for_admin(chat_id, 'sender')
+    
+    elif callback_data == 'admin_filter_carrier':
+        show_all_orders_for_admin(chat_id, 'carrier')
+    
+    elif callback_data == 'admin_filter_all':
+        show_all_orders_for_admin(chat_id, 'all')
+    
+    elif callback_data == 'admin_search_chatid':
+        state = user_states.get(chat_id, {})
+        state['admin_action'] = 'search_chatid'
+        user_states[chat_id] = state
+        send_message(chat_id, "🔍 Введите Chat ID пользователя для поиска его заявок:")
+    
+    elif callback_data == 'admin_exit_to_main':
+        perms = get_admin_permissions(chat_id)
+        if perms:
+            show_admin_panel(chat_id, perms)
     
     elif callback_data == 'admin_exit':
         if chat_id in admin_sessions:
