@@ -3497,10 +3497,11 @@ def handle_message(chat_id: int, text: str, username: str):
     
     if step == 'choose_service':
         if 'отправитель' in text.lower():
-            state['step'] = 'sender_marketplace'
+            state['step'] = 'choose_marketplace'
             data['type'] = 'sender'
             
             keyboard_buttons = [[{'text': mp}] for mp in MARKETPLACES]
+            keyboard_buttons.append([{'text': '⬅️ Назад'}])
             send_message(chat_id, "🏪 <b>Выберите маркетплейс</b>", {
                 'keyboard': keyboard_buttons,
                 'resize_keyboard': True,
@@ -3508,10 +3509,11 @@ def handle_message(chat_id: int, text: str, username: str):
             })
         
         elif 'перевозчик' in text.lower():
-            state['step'] = 'carrier_marketplace'
+            state['step'] = 'choose_marketplace'
             data['type'] = 'carrier'
             
             keyboard_buttons = [[{'text': mp}] for mp in MARKETPLACES]
+            keyboard_buttons.append([{'text': '⬅️ Назад'}])
             send_message(chat_id, "🏪 <b>Выберите маркетплейс</b>", {
                 'keyboard': keyboard_buttons,
                 'resize_keyboard': True,
