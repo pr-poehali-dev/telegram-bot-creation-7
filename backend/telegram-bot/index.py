@@ -3467,6 +3467,7 @@ def show_all_orders_for_admin(chat_id: int, filter_type: str = 'all'):
                     SELECT 'sender' as type, id, chat_id, marketplace, warehouse, loading_date, 
                            created_at, phone, sender_name as contact_name
                     FROM t_p52349012_telegram_bot_creatio.sender_orders
+                    WHERE id IS NOT NULL AND chat_id IS NOT NULL
                     ORDER BY created_at DESC
                     LIMIT 20
                 """)
@@ -3477,6 +3478,7 @@ def show_all_orders_for_admin(chat_id: int, filter_type: str = 'all'):
                     SELECT 'carrier' as type, id, chat_id, marketplace, warehouse, loading_date, 
                            created_at, phone, driver_name as contact_name
                     FROM t_p52349012_telegram_bot_creatio.carrier_orders
+                    WHERE id IS NOT NULL AND chat_id IS NOT NULL
                     ORDER BY created_at DESC
                     LIMIT 20
                 """)
