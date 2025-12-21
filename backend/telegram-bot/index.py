@@ -3375,7 +3375,8 @@ def show_main_menu(chat_id: int):
     keyboard_buttons = [
         [{'text': '📦 Отправитель'}],
         [{'text': '🚚 Перевозчик'}],
-        [{'text': '📋 Мои заявки'}]
+        [{'text': '📋 Мои заявки'}],
+        [{'text': '💾 Мои шаблоны'}]
     ]
     
     send_message(
@@ -3489,6 +3490,9 @@ def handle_message(chat_id: int, text: str, username: str):
         
         elif 'мои заявки' in text.lower():
             show_my_orders(chat_id)
+        
+        elif 'мои шаблоны' in text.lower() or '💾' in text:
+            show_templates_management(chat_id)
         
         return
     
@@ -3682,7 +3686,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         'body': json.dumps({'ok': True})
                     }
                 
-                process_message(chat_id, text, username)
+                handle_message(chat_id, text, username)
             
             elif 'callback_query' in update:
                 callback_query = update['callback_query']
