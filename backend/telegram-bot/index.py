@@ -297,6 +297,93 @@ def get_template_by_id(template_id: int, chat_id: int) -> Optional[Dict[str, Any
     finally:
         conn.close()
 
+def get_user_defaults(chat_id: int) -> Optional[Dict[str, Any]]:
+    """Получить последние значения пользователя для умных дефолтов"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            query = f"SELECT * FROM t_p52349012_telegram_bot_creatio.user_defaults WHERE chat_id = {chat_id}"
+            cur.execute(query)
+            result = cur.fetchone()
+            return dict(result) if result else None
+    except Exception as e:
+        print(f"[ERROR] get_user_defaults failed: {str(e)}")
+        return None
+    finally:
+        conn.close()
+
+def save_user_defaults(chat_id: int, data: Dict[str, Any], order_type: str):
+    """Сохранить последние значения пользователя для умных дефолтов"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    try:
+        with conn.cursor() as cur:
+            # Подготавливаем данные для вставки
+            marketplace = data.get('marketplace', '').replace("'", "''")
+            warehouse = data.get('warehouse', '').replace("'", "''")
+            phone = data.get('phone', '').replace("'", "''")
+            
+            if order_type == 'sender':
+                sender_name = data.get('sender_name', '').replace("'", "''")
+                loading_city = data.get('loading_city', '').replace("'", "''")
+                loading_address = data.get('loading_address', '').replace("'", "''")
+                
+                query = f"""
+                    INSERT INTO t_p52349012_telegram_bot_creatio.user_defaults 
+                    (chat_id, last_marketplace, last_warehouse, last_phone, 
+                     last_sender_name, last_loading_city, last_loading_address, 
+                     last_order_type, updated_at)
+                    VALUES ({chat_id}, '{marketplace}', '{warehouse}', '{phone}', 
+                            '{sender_name}', '{loading_city}', '{loading_address}', 
+                            'sender', CURRENT_TIMESTAMP)
+                    ON CONFLICT (chat_id) DO UPDATE SET
+                        last_marketplace = EXCLUDED.last_marketplace,
+                        last_warehouse = EXCLUDED.last_warehouse,
+                        last_phone = EXCLUDED.last_phone,
+                        last_sender_name = EXCLUDED.last_sender_name,
+                        last_loading_city = EXCLUDED.last_loading_city,
+                        last_loading_address = EXCLUDED.last_loading_address,
+                        last_order_type = 'sender',
+                        updated_at = CURRENT_TIMESTAMP
+                """
+            else:  # carrier
+                driver_name = data.get('driver_name', '').replace("'", "''")
+                car_model = data.get('car_model', '').replace("'", "''")
+                license_plate = data.get('license_plate', '').replace("'", "''")
+                loading_city_carrier = data.get('loading_city', '').replace("'", "''")
+                hydroboard = data.get('hydroboard', '').replace("'", "''")
+                
+                query = f"""
+                    INSERT INTO t_p52349012_telegram_bot_creatio.user_defaults 
+                    (chat_id, last_marketplace, last_warehouse, last_phone, 
+                     last_driver_name, last_car_model, last_license_plate, 
+                     last_loading_city_carrier, last_hydroboard, 
+                     last_order_type, updated_at)
+                    VALUES ({chat_id}, '{marketplace}', '{warehouse}', '{phone}', 
+                            '{driver_name}', '{car_model}', '{license_plate}', 
+                            '{loading_city_carrier}', '{hydroboard}', 
+                            'carrier', CURRENT_TIMESTAMP)
+                    ON CONFLICT (chat_id) DO UPDATE SET
+                        last_marketplace = EXCLUDED.last_marketplace,
+                        last_warehouse = EXCLUDED.last_warehouse,
+                        last_phone = EXCLUDED.last_phone,
+                        last_driver_name = EXCLUDED.last_driver_name,
+                        last_car_model = EXCLUDED.last_car_model,
+                        last_license_plate = EXCLUDED.last_license_plate,
+                        last_loading_city_carrier = EXCLUDED.last_loading_city_carrier,
+                        last_hydroboard = EXCLUDED.last_hydroboard,
+                        last_order_type = 'carrier',
+                        updated_at = CURRENT_TIMESTAMP
+                """
+            
+            cur.execute(query)
+            conn.commit()
+            print(f"[DEBUG] Saved user defaults for chat_id={chat_id}, order_type={order_type}")
+    except Exception as e:
+        print(f"[ERROR] save_user_defaults failed: {str(e)}")
+        conn.rollback()
+    finally:
+        conn.close()
+
 def send_message(chat_id: int, text: str, reply_markup: Optional[Dict] = None):
     """Отправить сообщение через Telegram Bot API"""
     url = f"{BASE_URL}/sendMessage"
@@ -1456,12 +1543,29 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         
         user_states[chat_id] = {'step': 'choose_service', 'data': {}, 'last_activity': time.time()}
         
-        keyboard_buttons = [
+        # Получаем шаблоны пользователя
+        templates = get_user_templates(chat_id)
+        
+        keyboard_buttons = []
+        
+        # Добавляем первые 3 шаблона на главный экран для быстрого доступа
+        if templates:
+            for template in templates[:3]:
+                template_name = template['template_name']
+                order_type = template.get('order_type', 'sender')
+                emoji = '📦' if order_type == 'sender' else '🚚'
+                keyboard_buttons.append([{'text': f"⚡️ {emoji} {template_name}"}])
+        
+        # Основные кнопки
+        keyboard_buttons.extend([
             [{'text': '📦 Отправитель'}],
             [{'text': '🚚 Перевозчик'}],
-            [{'text': '📋 Мои заявки'}],
-            [{'text': '💾 Мои шаблоны'}]
-        ]
+            [{'text': '📋 Мои заявки'}]
+        ])
+        
+        # Показываем кнопку "Мои шаблоны" только если есть больше 3 шаблонов
+        if templates and len(templates) > 3:
+            keyboard_buttons.append([{'text': '💾 Мои шаблоны'}])
         
         reply_markup = {
             'keyboard': keyboard_buttons,
@@ -1719,11 +1823,43 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         return
     
     if step == 'choose_service':
+        # Проверяем, не нажал ли пользователь на быстрый шаблон
+        if text.startswith('⚡️'):
+            # Извлекаем имя шаблона
+            template_name = text.replace('⚡️', '').replace('📦', '').replace('🚚', '').strip()
+            templates = get_user_templates(chat_id)
+            
+            # Ищем шаблон
+            template = next((t for t in templates if t['template_name'] == template_name), None)
+            
+            if template:
+                # Загружаем данные из шаблона
+                template_data = template.get('template_data', {})
+                if isinstance(template_data, str):
+                    template_data = json.loads(template_data)
+                
+                data.update(template_data)
+                data['type'] = template.get('order_type', 'sender')
+                
+                # Сразу переходим к предпросмотру
+                state['step'] = 'show_preview'
+                send_message(chat_id, "⚡️ <b>Загружен шаблон!</b>\n\nПроверьте данные и при необходимости измените:", {'remove_keyboard': True})
+                show_preview(chat_id, data)
+                return
+            
         if '📦' in text or 'отправитель' in text.lower():
             data['type'] = 'sender'
             state['step'] = 'choose_marketplace'
             
-            keyboard = [[{'text': mp}] for mp in MARKETPLACES]
+            # Умный дефолт: предложить последний маркетплейс
+            defaults = get_user_defaults(chat_id)
+            keyboard = []
+            
+            if defaults and defaults.get('last_marketplace') and defaults.get('last_order_type') == 'sender':
+                last_mp = defaults['last_marketplace']
+                keyboard.append([{'text': f"✅ {last_mp}"}])
+            
+            keyboard.extend([[{'text': mp}] for mp in MARKETPLACES])
             keyboard.append([{'text': '⬅️ Назад'}])
             send_message(
                 chat_id,
@@ -1734,7 +1870,15 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             data['type'] = 'carrier'
             state['step'] = 'choose_marketplace'
             
-            keyboard = [[{'text': mp}] for mp in MARKETPLACES]
+            # Умный дефолт: предложить последний маркетплейс
+            defaults = get_user_defaults(chat_id)
+            keyboard = []
+            
+            if defaults and defaults.get('last_marketplace') and defaults.get('last_order_type') == 'carrier':
+                last_mp = defaults['last_marketplace']
+                keyboard.append([{'text': f"✅ {last_mp}"}])
+            
+            keyboard.extend([[{'text': mp}] for mp in MARKETPLACES])
             keyboard.append([{'text': '⬅️ Назад'}])
             send_message(
                 chat_id,
@@ -1751,20 +1895,43 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
             send_message(chat_id, "Пожалуйста, выберите услугу из меню")
     
     elif step == 'choose_marketplace':
-        data['marketplace'] = text
+        # Если пользователь нажал на кнопку с последним маркетплейсом
+        if text.startswith('✅'):
+            marketplace = text.replace('✅', '').strip()
+        else:
+            marketplace = text.strip()
+        
+        data['marketplace'] = marketplace
+        
+        # Получаем последние значения пользователя
+        defaults = get_user_defaults(chat_id)
         
         if data['type'] == 'sender':
             state['step'] = 'sender_warehouse'
+            keyboard = []
+            
+            # Добавляем кнопку с последним значением, если оно есть
+            if defaults and defaults.get('last_warehouse'):
+                keyboard.append([{'text': f"✅ {defaults['last_warehouse']}"}])
+            
+            keyboard.append([{'text': '⬅️ Назад'}])
+            
             send_message(chat_id, "📍 <b>Укажите склад назначения</b>\n\nНапример: Электросталь", {
-                'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+                'keyboard': keyboard, 'resize_keyboard': True, 'one_time_keyboard': False
             })
         else:
             state['step'] = 'carrier_warehouse'
+            keyboard = [[{'text': '📦 Любой склад'}]]
+            
+            # Добавляем кнопку с последним значением, если оно есть
+            if defaults and defaults.get('last_warehouse'):
+                keyboard.insert(0, [{'text': f"✅ {defaults['last_warehouse']}"}])
+            
             send_message(
                 chat_id,
                 "📍 <b>Укажите склад назначения</b>\n\nНапример: Электросталь",
                 {
-                    'keyboard': [[{'text': '📦 Любой склад'}]],
+                    'keyboard': keyboard,
                     'resize_keyboard': True,
                     'one_time_keyboard': False
                 }
@@ -1783,8 +1950,20 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
     elif step == 'sender_loading_city':
         data['loading_city'] = text
         state['step'] = 'sender_loading_address'
-        send_message(chat_id, "🏠 <b>Укажите адрес ПОГРУЗКИ</b>\n\nНапример: ул. Ленина, д. 10", {
-            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        
+        # Умный дефолт: предложить последний адрес
+        defaults = get_user_defaults(chat_id)
+        keyboard = [[{'text': '⬅️ Назад'}]]
+        message = "🏠 <b>Укажите адрес ПОГРУЗКИ</b>\n\nНапример: ул. Ленина, д. 10"
+        
+        if defaults and defaults.get('last_loading_address'):
+            last_address = defaults['last_loading_address']
+            if len(last_address) <= 60:
+                keyboard.insert(0, [{'text': f"✅ {last_address}"}])
+                message += f"\n\n💡 Или используйте последний адрес"
+        
+        send_message(chat_id, message, {
+            'keyboard': keyboard, 'resize_keyboard': True, 'one_time_keyboard': False
         })
     
     elif step == 'sender_loading_address':
@@ -1937,26 +2116,59 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         
         data['box_quantity'] = value
         state['step'] = 'sender_name'
-        send_message(chat_id, "👤 <b>Укажите ФИО отправителя</b>\n\nНапример: Иванов Иван Иванович", {
-            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        
+        # Умный дефолт: предложить последнее ФИО
+        defaults = get_user_defaults(chat_id)
+        keyboard = [[{'text': '⬅️ Назад'}]]
+        message = "👤 <b>Укажите ФИО отправителя</b>\n\nНапример: Иванов Иван Иванович"
+        
+        if defaults and defaults.get('last_sender_name'):
+            last_name = defaults['last_sender_name']
+            keyboard.insert(0, [{'text': f"✅ {last_name}"}])
+            message += f"\n\n💡 Или используйте последнее ФИО"
+        
+        send_message(chat_id, message, {
+            'keyboard': keyboard, 'resize_keyboard': True, 'one_time_keyboard': False
         })
     
     elif step == 'sender_name':
-        if len(text.strip()) < 3:
+        # Если пользователь нажал на кнопку с последним ФИО
+        if text.startswith('✅'):
+            sender_name = text.replace('✅', '').strip()
+        else:
+            sender_name = text.strip()
+        
+        if len(sender_name) < 3:
             send_message(chat_id, "❌ ФИО должно содержать минимум 3 символа")
             return
-        data['sender_name'] = text
+        
+        data['sender_name'] = sender_name
         state['step'] = 'sender_phone'
-        send_message(chat_id, "📱 <b>Укажите номер телефона</b>\n\nФормат: +79991234567", {
-            'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
+        
+        # Умный дефолт: предложить последний телефон
+        defaults = get_user_defaults(chat_id)
+        keyboard = [[{'text': '⬅️ Назад'}]]
+        message = "📱 <b>Укажите номер телефона</b>\n\nФормат: +79991234567"
+        
+        if defaults and defaults.get('last_phone'):
+            last_phone = defaults['last_phone']
+            keyboard.insert(0, [{'text': f"✅ {last_phone}"}])
+            message += f"\n\n💡 Или используйте последний номер"
+        
+        send_message(chat_id, message, {
+            'keyboard': keyboard, 'resize_keyboard': True, 'one_time_keyboard': False
         })
     
     elif step == 'sender_phone':
-        phone = text.strip()
-        if phone.startswith('8'):
-            phone = '+7' + phone[1:]
-        elif not phone.startswith('+'):
-            phone = '+7' + phone
+        # Если пользователь нажал на кнопку с последним телефоном
+        if text.startswith('✅'):
+            phone = text.replace('✅', '').strip()
+        else:
+            phone = text.strip()
+            if phone.startswith('8'):
+                phone = '+7' + phone[1:]
+            elif not phone.startswith('+'):
+                phone = '+7' + phone
         
         if not validate_phone(phone):
             send_message(chat_id, "❌ Неверный формат телефона\n\n📞 Введите номер в формате:\n+79991234567 или 89991234567")
@@ -1988,25 +2200,87 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
 
     
     elif step == 'carrier_warehouse':
-        if 'любой' in text.lower():
-            data['warehouse'] = 'Любой склад'
+        if text.startswith('✅'):
+            warehouse = text.replace('✅', '').strip()
+        elif 'любой' in text.lower():
+            warehouse = 'Любой склад'
         else:
-            data['warehouse'] = text
+            warehouse = text
+        
+        data['warehouse'] = warehouse
         state['step'] = 'carrier_car_brand'
-        send_message(chat_id, "🚗 <b>Укажите марку автомобиля</b>\n\nНапример: Mercedes", {'remove_keyboard': True})
+        
+        # Умный дефолт: предложить последнюю марку авто
+        defaults = get_user_defaults(chat_id)
+        keyboard = []
+        message = "🚗 <b>Укажите марку автомобиля</b>\n\nНапример: Mercedes"
+        
+        if defaults and defaults.get('last_car_model'):
+            # last_car_model хранит полную модель, извлечём марку (первое слово)
+            last_model = defaults['last_car_model']
+            keyboard.append([{'text': f"✅ {last_model}"}])
+            message += f"\n\n💡 В прошлый раз: {last_model}"
+        
+        send_message(chat_id, message, {
+            'keyboard': keyboard if keyboard else None, 'resize_keyboard': True
+        })
     
     elif step == 'carrier_car_brand':
-        data['car_brand'] = text
+        # Если пользователь нажал на кнопку с последней моделью
+        if text.startswith('✅'):
+            car_info = text.replace('✅', '').strip()
+            # Если это полная модель (напр. "Mercedes Sprinter"), разделим
+            parts = car_info.split(maxsplit=1)
+            data['car_brand'] = parts[0] if parts else car_info
+            # Сразу переходим к номеру, пропуская модель
+            if len(parts) > 1:
+                data['car_model'] = parts[1]
+                state['step'] = 'carrier_license_plate'
+                
+                # Умный дефолт: предложить последний гос. номер
+                defaults = get_user_defaults(chat_id)
+                keyboard = []
+                message = "🔢 <b>Укажите гос. номер автомобиля</b>\n\nНапример: А000АА777"
+                
+                if defaults and defaults.get('last_license_plate'):
+                    last_plate = defaults['last_license_plate']
+                    keyboard.append([{'text': f"✅ {last_plate}"}])
+                    message += f"\n\n💡 В прошлый раз: {last_plate}"
+                
+                send_message(chat_id, message, {
+                    'keyboard': keyboard if keyboard else None, 'resize_keyboard': True
+                })
+                return
+        else:
+            data['car_brand'] = text
+        
         state['step'] = 'carrier_car_model'
         send_message(chat_id, "🚗 <b>Укажите модель автомобиля</b>\n\nНапример: Sprinter")
     
     elif step == 'carrier_car_model':
         data['car_model'] = text
         state['step'] = 'carrier_license_plate'
-        send_message(chat_id, "🔢 <b>Укажите гос. номер автомобиля</b>\n\nНапример: А000АА777")
+        
+        # Умный дефолт: предложить последний госномер
+        defaults = get_user_defaults(chat_id)
+        keyboard = []
+        message = "🔢 <b>Укажите гос. номер автомобиля</b>\n\nНапример: А000АА777"
+        
+        if defaults and defaults.get('last_license_plate'):
+            last_plate = defaults['last_license_plate']
+            keyboard.append([{'text': f"✅ {last_plate}"}])
+            message += f"\n\n💡 Или используйте последний номер"
+        
+        send_message(chat_id, message, {'keyboard': keyboard, 'resize_keyboard': True, 'one_time_keyboard': False} if keyboard else None)
     
     elif step == 'carrier_license_plate':
-        data['license_plate'] = text
+        # Если пользователь нажал на кнопку с последним номером
+        if text.startswith('✅'):
+            license_plate = text.replace('✅', '').strip()
+        else:
+            license_plate = text.strip()
+        
+        data['license_plate'] = license_plate
         state['step'] = 'carrier_pallet_capacity'
         send_message(chat_id, "📦 <b>Укажите вместимость паллет</b>\n\nНапример: 10\nИли 0, если не перевозите паллеты")
     
@@ -2038,19 +2312,55 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         
         data['box_capacity'] = value
         state['step'] = 'carrier_driver_name'
-        send_message(chat_id, "👤 <b>Укажите ФИО водителя</b>\n\nНапример: Петров Петр Петрович")
+        
+        # Умный дефолт: предложить последнее ФИО водителя
+        defaults = get_user_defaults(chat_id)
+        keyboard = []
+        message = "👤 <b>Укажите ФИО водителя</b>\n\nНапример: Петров Петр Петрович"
+        
+        if defaults and defaults.get('last_driver_name'):
+            last_driver = defaults['last_driver_name']
+            keyboard.append([{'text': f"✅ {last_driver}"}])
+            message += f"\n\n💡 Или используйте последнее ФИО"
+        
+        send_message(chat_id, message, {
+            'keyboard': keyboard if keyboard else None, 'resize_keyboard': True
+        })
     
     elif step == 'carrier_driver_name':
-        data['driver_name'] = text
+        # Если пользователь нажал на кнопку с последним ФИО
+        if text.startswith('✅'):
+            driver_name = text.replace('✅', '').strip()
+        else:
+            driver_name = text.strip()
+        
+        data['driver_name'] = driver_name
         state['step'] = 'carrier_phone'
-        send_message(chat_id, "📱 <b>Укажите номер телефона</b>\n\nФормат: +79991234567")
+        
+        # Умный дефолт: предложить последний телефон
+        defaults = get_user_defaults(chat_id)
+        keyboard = []
+        message = "📱 <b>Укажите номер телефона</b>\n\nФормат: +79991234567"
+        
+        if defaults and defaults.get('last_phone'):
+            last_phone = defaults['last_phone']
+            keyboard.append([{'text': f"✅ {last_phone}"}])
+            message += f"\n\n💡 Или используйте последний номер"
+        
+        send_message(chat_id, message, {
+            'keyboard': keyboard if keyboard else None, 'resize_keyboard': True
+        })
     
     elif step == 'carrier_phone':
-        phone = text.strip()
-        if phone.startswith('8'):
-            phone = '+7' + phone[1:]
-        elif not phone.startswith('+'):
-            phone = '+7' + phone
+        # Если пользователь нажал на кнопку с последним телефоном
+        if text.startswith('✅'):
+            phone = text.replace('✅', '').strip()
+        else:
+            phone = text.strip()
+            if phone.startswith('8'):
+                phone = '+7' + phone[1:]
+            elif not phone.startswith('+'):
+                phone = '+7' + phone
         
         if not validate_phone(phone):
             send_message(chat_id, "❌ Неверный формат телефона\n\n📞 Введите номер в формате:\n+79991234567 или 89991234567")
@@ -2059,21 +2369,38 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         
         data['phone'] = phone
         state['step'] = 'carrier_hydroboard'
+        
+        # Умный дефолт: предложить последнее значение гидроборта
+        defaults = get_user_defaults(chat_id)
+        keyboard = [
+            [{'text': 'Есть'}],
+            [{'text': 'Нету'}]
+        ]
+        
+        message = "🚚 <b>Гидроборт</b>"
+        if defaults and defaults.get('last_hydroboard'):
+            last_hydroboard = defaults['last_hydroboard']
+            keyboard.insert(0, [{'text': f"✅ {last_hydroboard}"}])
+            message += f"\n\n💡 В прошлый раз: {last_hydroboard}"
+        
         send_message(
             chat_id,
-            "🚚 <b>Гидроборт</b>",
+            message,
             {
-                'keyboard': [
-                    [{'text': 'Есть'}],
-                    [{'text': 'Нету'}]
-                ],
+                'keyboard': keyboard,
                 'resize_keyboard': True,
                 'one_time_keyboard': True
             }
         )
     
     elif step == 'carrier_hydroboard':
-        data['hydroboard'] = 'Есть' if 'есть' in text.lower() else 'Нету'
+        # Если пользователь нажал на кнопку с последним значением
+        if text.startswith('✅'):
+            hydroboard_value = text.replace('✅', '').strip()
+        else:
+            hydroboard_value = 'Есть' if 'есть' in text.lower() else 'Нету'
+        
+        data['hydroboard'] = hydroboard_value
         state['step'] = 'carrier_loading_city'
         
         send_message(
@@ -2444,6 +2771,9 @@ def save_sender_order(chat_id: int, data: Dict[str, Any]):
                 send_notifications_to_subscribers(order_id, 'sender', data)
                 find_matching_orders_by_date(order_id, 'sender', data)
                 
+                # Сохраняем дефолтные значения для будущих заявок
+                save_user_defaults(chat_id, data, 'sender')
+                
                 if chat_id in user_states:
                     del user_states[chat_id]
                 
@@ -2558,6 +2888,9 @@ def save_carrier_order(chat_id: int, data: Dict[str, Any]):
                     notify_about_new_order(order_id, 'carrier', data)
                 send_notifications_to_subscribers(order_id, 'carrier', data)
                 find_matching_orders_by_date(order_id, 'carrier', data)
+                
+                # Сохраняем дефолтные значения для будущих заявок
+                save_user_defaults(chat_id, data, 'carrier')
                 
                 if chat_id in user_states:
                     del user_states[chat_id]
