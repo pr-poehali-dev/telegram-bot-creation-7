@@ -1942,14 +1942,27 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         if '⬅️' in text or text.strip() == 'Назад':
             go_back_step(chat_id, state, data)
             return
-        data['warehouse'] = text
+        
+        # Если пользователь нажал на кнопку с последним складом
+        if text.startswith('✅'):
+            warehouse = text.replace('✅', '').strip()
+        else:
+            warehouse = text.strip()
+        
+        data['warehouse'] = warehouse
         state['step'] = 'sender_loading_city'
         send_message(chat_id, "🏙 <b>Укажите город или населенный пункт погрузки</b>\n\nНапример: Москва, Санкт-Петербург, Самара", {
             'keyboard': [[{'text': '⬅️ Назад'}]], 'resize_keyboard': True, 'one_time_keyboard': False
         })
     
     elif step == 'sender_loading_city':
-        data['loading_city'] = text
+        # Очищаем текст от галочки если есть
+        if text.startswith('✅'):
+            loading_city = text.replace('✅', '').strip()
+        else:
+            loading_city = text.strip()
+        
+        data['loading_city'] = loading_city
         state['step'] = 'sender_loading_address'
         
         # Умный дефолт: предложить последний адрес
@@ -1968,7 +1981,13 @@ def process_message(chat_id: int, text: str, username: str = 'unknown'):
         })
     
     elif step == 'sender_loading_address':
-        data['loading_address'] = text
+        # Если пользователь нажал на кнопку с последним адресом
+        if text.startswith('✅'):
+            loading_address = text.replace('✅', '').strip()
+        else:
+            loading_address = text.strip()
+        
+        data['loading_address'] = loading_address
         state['step'] = 'sender_loading_date'
         
         today = datetime.now()
